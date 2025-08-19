@@ -13,28 +13,21 @@ def dashboard():
     return html.Div([
         html.H1("My Personal Finance Dashboard", style={"textAlign": "center"}),
 
-        # container for the two visuals
+        # === Row 1 === (two visuals side by side)
         html.Div([
-            # Pie chart box
-            html.Div(
-                pocket_money_pie_chart(),
-                style={
-                    "width": "50%",       # half the container width
-                    "padding": "10px",
-                    "boxSizing": "border-box"
-                }
-            ),
+            html.Div(pocket_money_pie_chart(), style={"width": "50%", "padding": "10px"}),
+            html.Div(savings_line_graph(), style={"width": "50%", "padding": "10px"}),
+        ], style={"display": "flex"}),
 
-            # Savings line graph box
-            html.Div(
-                savings_line_graph(),
-                style={
-                    "width": "50%",       # half the container width
-                    "padding": "10px",
-                    "boxSizing": "border-box"
-                }
-            ),
-        ], style={"display": "flex"})  # flex container makes them side by side
+        # === Row 2 === (three visuals side by side)
+        html.Div([
+            html.Div(categories_bar_graph(), style={"width": "50%", "padding": "10px"}),
+        ], style={"display": "flex"}),
+
+        # === Row 3 === (single full-width visual)
+#        html.Div([
+#            html.Div(net_worth_line_chart(), style={"width": "100%", "padding": "10px"})
+#        ], style={"display": "flex"}),
     ])
 
 
@@ -114,9 +107,40 @@ def savings_line_graph():
         )
     )
 
+# function for most spent categories in a month 
+def categories_bar_graph():
+    today = datetime.now()
+    month = today.strftime("%B").upper()
+    year = today.year
+
+    df = data.biggest_expenses_in_current_month(month, year) ###### FILTER ONLY DIRECTION == OUT
+
+    return dcc.Graph(
+        figure=go.Figure(
+            data=[go.Bar(
+                x=df['Category'],
+                y=df['Total Expenditure'],
+                marker_color="#FF9900",
+                name='Amount Spent'
+            )],
+            layout=go.Layout(
+                title={
+                    'text': f"Top Spending Categories This Month ({month.title()} {year})",
+                    'y': 0.95,
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'yanchor': 'top'
+                },
+                xaxis_title="Category",
+                yaxis_title="Amount (£)",
+            )
+        )
+    )
+
 
 app = dash.Dash(__name__)
 app.layout = dashboard()
 
 if __name__ == "__main__":
     app.run(debug=True)
+    
