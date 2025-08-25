@@ -1,3 +1,5 @@
+import yfinance as yf
+import time 
 import pandas as pd
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -5,11 +7,11 @@ import os
 import requests
 import json
 
+
 load_dotenv()  # Loads variables from .env into the environment
 
 class StarlingAPI:
-    def __init__(self):
-
+    def __init__(self, max_retries=3, backoff=2):
         # API token environment variable
         TOKEN = os.getenv("payment_token")
 
@@ -18,36 +20,60 @@ class StarlingAPI:
             "Authorization": f"Bearer {TOKEN}",
             "Accept": "application/json"
         }
+        self.max_retries = max_retries
+        self.backoff = backoff
+
+    def _request(self, method, endpoint, **kwargs):
+        """
+        Internal helper method to make API requests with retry logic.
+        """
+        url = f"{self.base_url}{endpoint}"
+
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                response = requests.request(
+                    method, url, headers=self.headers, timeout=10, **kwargs
+                )
+                response.raise_for_status()  
+
+                return response.json()  
+
+            except (requests.exceptions.RequestException, ValueError) as e:
+                print(f"[StarlingAPI] Attempt {attempt} failed: {e}")
+
+                # re-raise on final failure
+                if attempt == self.max_retries:
+                    raise  
+
+                time.sleep(self.backoff)
 
     # get account data
     def get_accounts(self):
-        return requests.get(f"{self.base_url}/accounts", headers=self.headers).json()
+        return self._request("GET", "/accounts")
 
     # get specified account balance 
     def get_balance(self, account_uid):
-        return requests.get(f"{self.base_url}/accounts/{account_uid}/balance", headers=self.headers).json()
-    
-    # get transation statement between  specified times
+        return self._request("GET", f"/accounts/{account_uid}/balance")
+
+    # get transaction statement between specified times
     def get_transaction_statement(self, account_uid, category_uid, start_date, end_date):
-        url = f"{self.base_url}/feed/account/{account_uid}/category/{category_uid}/transactions-between?minTransactionTimestamp={start_date}&maxTransactionTimestamp={end_date}"
-        response = requests.get(url, headers=self.headers)
-        return response.json()["feedItems"] 
-    
+        url = f"/feed/account/{account_uid}/category/{category_uid}/transactions-between"
+        params = {
+            "minTransactionTimestamp": start_date,
+            "maxTransactionTimestamp": end_date
+        }
+
+        data = self._request("GET", url, params=params)
+        return data.get("feedItems", [])
+
     # categories like "bills", "Eating out" etc
     def get_monthly_categories(self, account_uid, year, month):
 
-        url = f"{self.base_url}/accounts/{account_uid}/spending-insights/spending-category"
+        # parameters
+        params = {"year": year, "month": month}
 
-        params = {
-            'year' : year,
-            'month' : month 
-        }
-        response = requests.get(
-                    url, 
-                    headers=self.headers, 
-                    params=params
-        )
-        return response.json()
+        # return the .json response
+        return self._request("GET", f"/accounts/{account_uid}/spending-insights/spending-category", params=params)
 
 # define a function for the monthly pocket money expenses
 def monthly_pocket_money_balance():
@@ -226,8 +252,104 @@ def transactions(start_date: str, end_date: str = None):
 
     return transactions_df
 
+# function to get investment data
+# want to return how many shares I own of a ticker, total invested value per ticker, net deposit, rate of return, and how much it has grown by 
+def investments_data(statement_file):
+
+    # read the statement file
+    df = pd.read_csv(statement_file)
+
+    # fucnction to return number of shares owned per ticker
+    def shares_owned_per_ticker():
+        
+        # dataframe for buy and sell 
+        df_buy = df[df['Action'] == 'Market buy']
+        df_sell = df[df['Action'] == 'Market sell']
+
+        shares_buy = df_buy.groupby('Ticker')['No. of shares'].sum()
+        shares_sell = df_sell.groupby('Ticker')['No. of shares'].sum()
+        
+        # get number of shares owned
+        shares_owned = shares_buy.subtract(shares_sell, fill_value=0)
+
+        # number of shares owned per ticker
+        shares_owned = shares_owned[shares_owned > 0]
+        shares_owned_df = shares_owned.reset_index()
+
+        return shares_owned_df
+    
+    # function to return net deposit per ticker
+    def net_deposit_per_ticker():
+
+        df_buy = df[df['Action'] == 'Market buy']
+        df_sell = df[df['Action'] == 'Market sell']
+
+        buy_deposit = df_buy.groupby('Ticker')['Total'].sum()
+        sell_withdrawal = df_sell.groupby('Ticker')['Total'].sum()
+
+        net_deposit = buy_deposit.subtract(sell_withdrawal, fill_value=0)
+        net_deposit = net_deposit[net_deposit > 0].reset_index()
+        net_deposit.columns = ['Ticker', 'Net Deposit']
+
+        # keep only tickers you still own
+        owned_tickers = shares_owned_per_ticker()['Ticker'].tolist()
+        net_deposit = net_deposit[net_deposit['Ticker'].isin(owned_tickers)]
+
+        return net_deposit
+
+    # inner join the tables on Ticker
+    shares_owned = shares_owned_per_ticker()
+    net_deposit = net_deposit_per_ticker()
+
+    # Get current price for each ticker using yfinance
+    def get_current_price(ticker):
+        try:
+            data = yf.Ticker(ticker).history(period="1d")
+            if not data.empty:
+                return data['Close'].iloc[-1]
+        except:
+            pass
+        
+        # Try London Stock Exchange
+        try:
+            data_l = yf.Ticker(f"{ticker}.L").history(period="1d")
+            if not data_l.empty:
+                return data_l['Close'].iloc[-1]
+        except:
+            pass
+        
+        # Could not fetch price
+        return None
+
+    shares_owned['Current Price'] = shares_owned['Ticker'].apply(get_current_price)
+    
+    # Calculate current value
+    shares_owned['Current Value'] = shares_owned['No. of shares'] * shares_owned['Current Price']
+
+    result = pd.merge(
+        shares_owned,
+        net_deposit,
+        on="Ticker",   
+        how="inner"    
+    )
+
+    # Calculate rate of return and growth
+    result['Rate of Return (%)'] = ((result['Current Value'] - result['Net Deposit']) / result['Net Deposit']) * 100
+    result['Growth'] = result['Current Value'] - result['Net Deposit']
+
+    return result
+
+    
+    
+
 
 if __name__ == "__main__":
-    # Example usage
-    df = biggest_expenses_in_current_month('AUGUST', 2025)
+
+    #value = yf.Ticker('VUAG.L')    
+    #value = yf.Ticker('NVDA')
+    #print(value.history(period="1d"))
+
+
+    df = investments_data('Investments.csv')
     print(df)
+    
