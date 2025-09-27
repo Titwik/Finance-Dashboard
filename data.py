@@ -7,7 +7,6 @@ import os
 import requests
 import json
 
-
 load_dotenv()  # Loads variables from .env into the environment
 
 class StarlingAPI:
@@ -178,45 +177,34 @@ def biggest_expenses_in_current_month(month, year):
           by=["Direction", "Total Expenditure"], 
           ascending=[False, False]
       )
-)
+    )
+
+    category_df = category_df[~category_df['Category'].isin(['Saving', 'Investments'])]
     return category_df
 
 # function to get the transaction history from the main account
-def transactions(start_date: str, end_date: str = None):
-    """
-    Enter the start and end date in dd/mm/yyyy format.
-    If end_date is not provided, defaults to current time.
-    """
+def transactions(start_date, end_date):
 
-    # Convert start_date string -> datetime
-    start_dt = datetime.strptime(start_date, "%d/%m/%Y")
+    start_iso = start_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    end_iso  = end_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-    # If end_date is None, use current datetime
-    if end_date:
-        end_dt = datetime.strptime(end_date, "%d/%m/%Y")
-    else:
-        end_dt = datetime.now()
-
-    # Convert both to API format
-    start_iso = start_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    end_iso = end_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-
+    # call the bank api
     api = StarlingAPI()
 
     # Get accounts
     accounts_data = api.get_accounts()
-    savings_accountUid = accounts_data['accounts'][0]['accountUid']
-    savings_categoryUid = accounts_data['accounts'][0]['defaultCategory']
+    main_accountUid = accounts_data['accounts'][0]['accountUid']
+    main_categoryUid = accounts_data['accounts'][0]['defaultCategory']
 
     # Get balance (optional, but you had it before)
-    current_balance_minor = api.get_balance(savings_accountUid)['effectiveBalance']['minorUnits']
+    current_balance_minor = api.get_balance(main_accountUid)['effectiveBalance']['minorUnits']
     current_balance = current_balance_minor / 100
 
     # Get transactions
     try:
         transactions = api.get_transaction_statement(
-            savings_accountUid,
-            savings_categoryUid,
+            main_accountUid,
+            main_categoryUid,
             start_iso,
             end_iso
         )
@@ -228,10 +216,6 @@ def transactions(start_date: str, end_date: str = None):
 
         # get relevant attributes that may be missing
         settled_date = tx.get("transactionTime")
-        spending_category = tx.get('spendingCategory')
-
-        if not spending_category:
-            spending_category = 'N/A'
 
         # if settled date exists, convert to dd/mm/yyyy
         if settled_date:  
@@ -243,8 +227,8 @@ def transactions(start_date: str, end_date: str = None):
             'Date': settled_date,
             'Counter Party Name': tx['counterPartyName'],
 #            'Reference': tx['reference'],
-            'Category' : tx['spendingCategory'],
-            'Amount': tx['amount']['minorUnits']/100,           
+            'Category': tx['spendingCategory'].replace('_', ' ').title(),
+            'Amount': tx['sourceAmount']['minorUnits']/100,           
             'Currency': tx['sourceAmount']['currency'],
             'Direction' : tx['direction']
         })
@@ -305,8 +289,13 @@ def investments_data(statement_file):
     def get_current_price(ticker):
         try:
             data = yf.Ticker(ticker).history(period="1d")
-            if not data.empty:
+            print('Ignore the message above')
+            print('')
+            if data.index.empty:
+                pass
+            elif not data.empty:
                 return data['Close'].iloc[-1]
+            
         except:
             pass
         
@@ -333,23 +322,42 @@ def investments_data(statement_file):
         how="inner"    
     )
 
-    # Calculate rate of return and growth
-    result['Rate of Return (%)'] = ((result['Current Value'] - result['Net Deposit']) / result['Net Deposit']) * 100
+    #Per-ticker rate of return and growth
+    result['Rate of Return (%)'] = (
+        (result['Current Value'] - result['Net Deposit']) / result['Net Deposit']
+    ) * 100
     result['Growth'] = result['Current Value'] - result['Net Deposit']
 
-    return result
+    # Portfolio-level totals 
+    total_net_deposit = result['Net Deposit'].sum()
+    total_current_value = result['Current Value'].sum()
+    total_growth = total_current_value - total_net_deposit
+    total_return_pct = (total_growth / total_net_deposit) * 100 if total_net_deposit > 0 else 0
 
-    
-    
+    portfolio_summary = {
+        "Total Net Deposit": total_net_deposit,
+        "Total Current Value": total_current_value,
+        "Total Growth": total_growth,
+        "Overall Rate of Return (%)": total_return_pct
+    }
 
+    return result, portfolio_summary
 
 if __name__ == "__main__":
 
-    #value = yf.Ticker('VUAG.L')    
-    #value = yf.Ticker('NVDA')
-    #print(value.history(period="1d"))
+    end_date = datetime.now()
+    start_date = end_date.replace(day=19)
 
+    start_date = start_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    end_date = end_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-    df = investments_data('Investments.csv')
-    print(df)
-    
+    #df = transactions(start_date, end_date)
+    #print(df[df['Direction'] == 'OUT'])
+
+    api = StarlingAPI()
+
+    end_date = datetime.now()
+    start_date = end_date.replace(day=19)
+
+    df = transactions(start_date, end_date)
+    print(df[df['Direction'] == 'OUT'])
