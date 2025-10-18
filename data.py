@@ -1,11 +1,13 @@
-import yfinance as yf
-import time 
-import pandas as pd
-from datetime import datetime, timedelta
-from dotenv import load_dotenv
+
 import os
-import requests
 import json
+import time
+import requests
+import pandas as pd
+import yfinance as yf
+from pathlib import Path
+from dotenv import load_dotenv
+from datetime import datetime, timedelta
 
 load_dotenv()  # Loads variables from .env into the environment
 
@@ -73,26 +75,96 @@ class StarlingAPI:
 
         # return the .json response
         return self._request("GET", f"/accounts/{account_uid}/spending-insights/spending-category", params=params)
+    
+    # get savings spaces
+    def get_savings_spaces(self, accountUid):
 
-# define a function for the monthly pocket money expenses
-def monthly_pocket_money_balance():
+        url = f'/account/{accountUid}/spaces'
+        
+        return self._request('GET', url)
+    
+    def get_spending_space(self, accountUid, spaceUid):
+
+        url = f'/account/{accountUid}/spaces/spending/{spaceUid}'
+
+        return self._request('GET', url)
+
+# define a function for the monthly pocket money and groceries expenses
+def monthly_balance():
 
     # call the API class
     api = StarlingAPI()
 
-    # get accounts
-    accounts_data = api.get_accounts()
-    main_accountUid = accounts_data['accounts'][0]['accountUid']
-    #main_categoryUid = accounts_data['accounts'][0]['defaultCategory']
+    # account data
+    account_data = api.get_accounts()
+    accountUid = account_data['accounts'][0]['accountUid']
+    categoryUid = account_data['accounts'][0]['defaultCategory']
 
-    # get balance for that account
-    main_balance = api.get_balance(main_accountUid)['effectiveBalance']['minorUnits'] / 100
+    # payday is the 27th, so budget from the 27th onwards
+    today = datetime.now()
+    end_date = today
+    if today.day >= 27:
+        start_date = today.replace(day=27)
+    else:
+        temp_date = today.replace(day=1)
+        last_month = temp_date - timedelta(days=1) # subtract 1 from the last day of month to go to 'last month'
+        start_date = last_month.replace(day=27)
+    end_date_str = end_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    start_date_str = start_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-    return main_balance
+    # get the transaction history
+    transaction_history = api.get_transaction_statement(
+        accountUid,
+        categoryUid,
+        start_date_str,
+        end_date_str
+    )
 
-# function to track the growth of savings account
+    def pocket_money():
+
+        '''
+        Logic: I have 180 GBP for casual, guilt-free spending. Check if category is NOT investments, rent, utilities etc and subtract from 180 GBP
+        '''
+        pocket_money_allowance = 18000 # in minorUnits
+        exclusions = ('investments', 'rent', 'bills', 'expenses', 'income', 'saving', 'groceries') # categories not to consider for personal spending
+
+        total_pocket_money_spent = 0
+        for tx in transaction_history:
+            if (tx['spendingCategory'].lower() not in exclusions and 
+                tx['direction'] == 'OUT'
+            ):
+                total_pocket_money_spent += tx['amount']['minorUnits']
+
+        remaining_pocket_money = pocket_money_allowance - total_pocket_money_spent
+
+        return remaining_pocket_money/100, total_pocket_money_spent/100
+    
+    def grocery_balance():
+
+        """
+        Logic: I have 120 GBP for groceries, so 100% of the visual should be 120. I will then deduct from 120 any amount that is classed as 'groceries' in the transaction statement category.
+        """
+
+        groceries_allowance = 12000 # in minorUnits
+
+        total_groceries_spent = 0
+        for tx in transaction_history:
+            if tx['spendingCategory'].lower() == 'groceries' and tx['direction'] == 'OUT':
+                total_groceries_spent += tx['amount']['minorUnits']
+
+        remaining_groceries = groceries_allowance - total_groceries_spent
+
+        return remaining_groceries/100, total_groceries_spent/100
+    
+    return pocket_money(), grocery_balance()
+
+# function to track growth of savings account
 def savings_growth_history():
     
+    """
+    data to track the growth of savings account over time
+    """
+
     api = StarlingAPI()
 
     # Get accounts
@@ -106,48 +178,51 @@ def savings_growth_history():
 
     # Get transactions since start date
     start_date = datetime.strptime("2025-07-27", "%Y-%m-%d").strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    today = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    end_date = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     transactions = api.get_transaction_statement(
         savings_accountUid,
         savings_categoryUid,
         start_date,
-        today
+        end_date
     )
 
     # Create DataFrame
     df = pd.DataFrame(transactions)
-    df = df[['amount', 'settlementTime', 'direction']]
+    df = df[['direction', 'amount', 'spendingCategory', 'settlementTime']]
+
+    # keep datetime for calculations
     df['settlementTime'] = pd.to_datetime(df['settlementTime'])
     df['amount'] = df.apply(
         lambda x: x['amount']['minorUnits'] / 100 * (-1 if x['direction'] == 'OUT' else 1),
         axis=1
     )
+    
+    # reverse order for chronological
+    df = df.iloc[::-1].reset_index(drop=True)
+    df['display_date'] = df['settlementTime'].dt.strftime('%d/%m/%Y')
 
-    # Create month column
-    df['month'] = df['settlementTime'].dt.to_period('M')
+    # Compute cumulative change
+    df['running_balance_change'] = df['amount'].cumsum()
+    starting_balance = current_balance - df['running_balance_change'].iloc[-1]
+    df['absolute_balance'] = starting_balance + df['running_balance_change']
 
-    # Sum transactions by month
-    monthly_change = df.groupby('month')['amount'].sum().sort_index()
+    df = df[['display_date', 'amount', 'absolute_balance']]
 
-    # Compute cumulative balance starting from initial balance
-    # Estimate starting balance = current balance minus sum of all transactions
-    starting_balance = current_balance - monthly_change.sum()
-    monthly_balance = monthly_change.cumsum() + starting_balance
-
-    # Convert month to string for plotting
-    monthly_balance = monthly_balance.reset_index()
-    monthly_balance['month'] = monthly_balance['month'].dt.strftime('%b %Y')
-
-    return monthly_balance
+    return df
 
 # function to return the biggest expenses in the month 
 def biggest_expenses_in_current_month(month, year):
 
     """
-    month is one of the following:
-    [JANUARY, FEBRUARY, MARCH, APRIL, MAY, JUNE, JULY, AUGUST, SEPTEMBER, OCTOBER, NOVEMBER, DECEMBER]
+    Returns a DataFrame of the largest spending categories for the given month and year.
 
-    year is an integer year.
+    Args:
+        month (str): One of ["JANUARY", "FEBRUARY", ..., "DECEMBER"] (case-insensitive)
+        year (int): The year as an integer, e.g., 2025
+
+    Returns:
+        pd.DataFrame: Sorted list of spending categories and their total expenditure.
+                      Returns None and prints a message if no activity.
     """
 
     api = StarlingAPI()
@@ -155,21 +230,20 @@ def biggest_expenses_in_current_month(month, year):
     # Get accounts
     accounts_data = api.get_accounts()
     main_accountUid = accounts_data['accounts'][0]['accountUid']
-    
-    transactions = api.get_monthly_categories(main_accountUid, int(year), month.upper())
+    main_categories = api.get_monthly_categories(main_accountUid, int(year), month.upper())
 
-    if len(transactions['breakdown']) == 0:
+    if len(main_categories['breakdown']) == 0:
         return print('No account activity for the chosen time.')
     
     # convert to a df so plotly can visualize it
-    category_list = []
-    for category in transactions['breakdown']:
-        category_text = category['spendingCategory'].title().replace("_", " ")
-        category_list.append({
-            'Category': category_text,
-            'Total Expenditure': category['netSpend'],
-            'Direction': category['netDirection']
-        })
+    category_list = [
+        {
+            'Category': cat['spendingCategory'].title().replace("_", " "),
+            'Total Expenditure': cat['netSpend'],
+            'Direction': cat['netDirection']
+        }
+        for cat in main_categories['breakdown']
+    ]
 
     category_df = (
     pd.DataFrame(category_list)
@@ -180,25 +254,23 @@ def biggest_expenses_in_current_month(month, year):
     )
 
     category_df = category_df[~category_df['Category'].isin(['Saving', 'Investments'])]
+
     return category_df
 
 # function to get the transaction history from the main account
 def transactions(start_date, end_date):
 
-    start_iso = start_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    end_iso  = end_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    # Convert input strings to datetime objects
+    start_dt = datetime.strptime(start_date, "%d/%m/%Y")
+    end_dt = datetime.strptime(end_date, "%d/%m/%Y")
+    start_iso = start_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    end_iso   = end_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-    # call the bank api
+    # Call the API
     api = StarlingAPI()
-
-    # Get accounts
     accounts_data = api.get_accounts()
     main_accountUid = accounts_data['accounts'][0]['accountUid']
     main_categoryUid = accounts_data['accounts'][0]['defaultCategory']
-
-    # Get balance (optional, but you had it before)
-    current_balance_minor = api.get_balance(main_accountUid)['effectiveBalance']['minorUnits']
-    current_balance = current_balance_minor / 100
 
     # Get transactions
     try:
@@ -208,156 +280,63 @@ def transactions(start_date, end_date):
             start_iso,
             end_iso
         )
-    except:
-        print('Something went wrong')
+    except Exception as e:
+        print('Something went wrong:', e)
+        return pd.DataFrame()  # return empty DataFrame on error
 
     transaction_list = []
     for tx in transactions:
-
         # get relevant attributes that may be missing
-        settled_date = tx.get("transactionTime")
+        settled_date_str = tx.get("transactionTime")
 
-        # if settled date exists, convert to dd/mm/yyyy
-        if settled_date:  
-            settled_date = datetime.strptime(settled_date, "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%d/%m/%Y")
+        # convert to datetime if exists
+        if settled_date_str:  
+            settled_date = datetime.strptime(settled_date_str, "%Y-%m-%dT%H:%M:%S.%fZ")
+            display_date = settled_date.strftime("%d/%m/%Y")
         else:
-            settled_date = "N/A"  
+            settled_date = None
+            display_date = "N/A"
 
         transaction_list.append({
-            'Date': settled_date,
+            'DateTime': settled_date,                 # keep datetime for sorting
+            'Date': display_date,             
             'Counter Party Name': tx['counterPartyName'],
-#            'Reference': tx['reference'],
             'Category': tx['spendingCategory'].replace('_', ' ').title(),
             'Amount': tx['sourceAmount']['minorUnits']/100,           
             'Currency': tx['sourceAmount']['currency'],
             'Direction' : tx['direction']
         })
+
     transactions_df = pd.DataFrame(transaction_list)
+
+    # Sort using the datetime column
+    transactions_df = transactions_df.sort_values(by='DateTime', ascending=True).reset_index(drop=True)
+    transactions_df = transactions_df[['Date', 
+                                       'Counter Party Name', 
+                                       'Category', 
+                                       'Amount',
+                                       'Currency',
+                                       'Direction']]
 
     return transactions_df
 
-# function to get investment data
-# want to return how many shares I own of a ticker, total invested value per ticker, net deposit, rate of return, and how much it has grown by 
-def investments_data(statement_file):
-
-    # read the statement file
-    df = pd.read_csv(statement_file)
-
-    # fucnction to return number of shares owned per ticker
-    def shares_owned_per_ticker():
-        
-        # dataframe for buy and sell 
-        df_buy = df[df['Action'] == 'Market buy']
-        df_sell = df[df['Action'] == 'Market sell']
-
-        shares_buy = df_buy.groupby('Ticker')['No. of shares'].sum()
-        shares_sell = df_sell.groupby('Ticker')['No. of shares'].sum()
-        
-        # get number of shares owned
-        shares_owned = shares_buy.subtract(shares_sell, fill_value=0)
-
-        # number of shares owned per ticker
-        shares_owned = shares_owned[shares_owned > 0]
-        shares_owned_df = shares_owned.reset_index()
-
-        return shares_owned_df
-    
-    # function to return net deposit per ticker
-    def net_deposit_per_ticker():
-
-        df_buy = df[df['Action'] == 'Market buy']
-        df_sell = df[df['Action'] == 'Market sell']
-
-        buy_deposit = df_buy.groupby('Ticker')['Total'].sum()
-        sell_withdrawal = df_sell.groupby('Ticker')['Total'].sum()
-
-        net_deposit = buy_deposit.subtract(sell_withdrawal, fill_value=0)
-        net_deposit = net_deposit[net_deposit > 0].reset_index()
-        net_deposit.columns = ['Ticker', 'Net Deposit']
-
-        # keep only tickers you still own
-        owned_tickers = shares_owned_per_ticker()['Ticker'].tolist()
-        net_deposit = net_deposit[net_deposit['Ticker'].isin(owned_tickers)]
-
-        return net_deposit
-
-    # inner join the tables on Ticker
-    shares_owned = shares_owned_per_ticker()
-    net_deposit = net_deposit_per_ticker()
-
-    # Get current price for each ticker using yfinance
-    def get_current_price(ticker):
-        try:
-            data = yf.Ticker(ticker).history(period="1d")
-            print('Ignore the message above')
-            print('')
-            if data.index.empty:
-                pass
-            elif not data.empty:
-                return data['Close'].iloc[-1]
-            
-        except:
-            pass
-        
-        # Try London Stock Exchange
-        try:
-            data_l = yf.Ticker(f"{ticker}.L").history(period="1d")
-            if not data_l.empty:
-                return data_l['Close'].iloc[-1]
-        except:
-            pass
-        
-        # Could not fetch price
-        return None
-
-    shares_owned['Current Price'] = shares_owned['Ticker'].apply(get_current_price)
-    
-    # Calculate current value
-    shares_owned['Current Value'] = shares_owned['No. of shares'] * shares_owned['Current Price']
-
-    result = pd.merge(
-        shares_owned,
-        net_deposit,
-        on="Ticker",   
-        how="inner"    
-    )
-
-    #Per-ticker rate of return and growth
-    result['Rate of Return (%)'] = (
-        (result['Current Value'] - result['Net Deposit']) / result['Net Deposit']
-    ) * 100
-    result['Growth'] = result['Current Value'] - result['Net Deposit']
-
-    # Portfolio-level totals 
-    total_net_deposit = result['Net Deposit'].sum()
-    total_current_value = result['Current Value'].sum()
-    total_growth = total_current_value - total_net_deposit
-    total_return_pct = (total_growth / total_net_deposit) * 100 if total_net_deposit > 0 else 0
-
-    portfolio_summary = {
-        "Total Net Deposit": total_net_deposit,
-        "Total Current Value": total_current_value,
-        "Total Growth": total_growth,
-        "Overall Rate of Return (%)": total_return_pct
-    }
-
-    return result, portfolio_summary
-
 if __name__ == "__main__":
 
-    end_date = datetime.now()
-    start_date = end_date.replace(day=19)
+    end_date = '05/04/2025'
+    start_date = '02/04/2025'
 
-    start_date = start_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    end_date = end_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    end_dt = datetime.strptime(end_date, "%d/%m/%Y")
+    start_dt = datetime.strptime(start_date, "%d/%m/%Y")
 
-    #df = transactions(start_date, end_date)
-    #print(df[df['Direction'] == 'OUT'])
+    # Convert to ISO format for the API
+    #end_date_str = end_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    #start_date_str = start_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-    api = StarlingAPI()
+    #api = StarlingAPI()
+    # Get accounts
+    #accounts_data = api.get_accounts()
+    #accountUid = accounts_data['accounts'][0]['accountUid']
+    #categoryUid = accounts_data['accounts'][0]['defaultCategory']
+    print(savings_growth_history())
 
-    end_date = datetime.now()
-    start_date = end_date.replace(day=19)
-
-    df = transactions(start_date, end_date)
-    print(df[df['Direction'] == 'OUT'])
+    

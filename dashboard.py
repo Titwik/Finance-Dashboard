@@ -1,3 +1,4 @@
+import pandas as pd
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import data #  python file containing financial data
@@ -8,237 +9,169 @@ from dash import dcc, html, Input, Output, callback, dash_table
 import plotly.express as px
 import plotly.graph_objs as go 
 
-app = dash.Dash(__name__, suppress_callback_exceptions=True)
+app = dash.Dash(__name__)
 
+# dashboard files
 def dashboard():
     return html.Div([
-        html.H1("My Personal Finance Dashboard", style={"textAlign": "center"}),
+        html.H1("Personal Finance Dashboard", style={"textAlign": "center"}),
 
-        # Row 1
+        # Row 1: Pocket Money & Groceries Donuts side by side
         html.Div([
-            html.Div(pocket_money_pie_chart(), style={"width": "50%", "padding": "10px"}),
-            html.Div(savings_line_graph(), style={"width": "50%", "padding": "10px"}),           # this function is causing some bloat text in the terminal. Look into it
+            html.Div(pocket_money_donut_chart(), style={"width": "50%", "padding": "10px"}),
+            html.Div(groceries_donut_chart(), style={"width": "50%", "padding": "10px"})
         ], style={"display": "flex"}),
 
-        # Row 2
         html.Div([
-            html.Div(categories_bar_graph(), style={"width": "50%", "padding": "10px"}),
-        ], style={"display": "flex"}),
-
-        # Row 3 - Transactions Table
-        html.Div([
-            html.Div(transactions_table(), 
-            style = {
-                'width': '100%', 
-                'padding' : '10px',
-            })
-        ], style = {'display' : 'flex'})
+            html.Div(savings_line(), style={"width": "50%", "padding": "10px"})
+        ], style={"display": "flex"})
     ])
 
-############------GRAPH FUNCTIONS------###############
+#---------------- GRAPH FUNCTIONS ----------------#
+# pocket money donut 
+def pocket_money_donut_chart():
 
-# visual to create pie chart for current month's expenditure tracking
-def pocket_money_pie_chart():
-
-    # update the date if today is the 27th of the month
-    today = datetime.now()
-    if today.day == 27:
-        # update the start date to the 27th of the current month
-        start_date = today.replace(day=27)
-    else:
-        # use the 27th of the previous month
-        start_date = (today.replace(day=1) - timedelta(days=1)).replace(day=27)
-
-    # re-format start date to dd/mm/yyyy
-    start_date = start_date.strftime("%d/%m/%Y")
-    
-    # format today's date as dd/mm/yyyy
-    today_str = today.strftime("%d/%m/%Y")
-
-    # get the monthly pocket money expenses
-    monthly_balance = data.monthly_pocket_money_balance()
-    
-    # total budget for the month
-    total_budget = 300
-    monthly_spent = total_budget - monthly_balance
-
-    # add a failsafe so the visual doesn't break if you have over 300 GBP in the account
-    if monthly_balance >= 300:
-        monthly_spent = 0
-    
-    # data for pie chart 
-    values = [f'{monthly_spent}', f'{monthly_balance}']
-    labels = ['Spent', 'Remaining']
-    colors = ['#cc0000', '#008000']
+    pocket_money, _ = data.monthly_balance()
+    labels = ['Remaining', 'Spent']
+    #values = [pocket_money[0], pocket_money[1]]  
+    values = [100,90]
+    colors = ['#008000', '#cc0000']  
 
     fig = go.Figure(
-        data=go.Pie(
+        data=[go.Pie(
             labels=labels,
             values=values,
-            marker={'colors': colors},
-            textinfo='value',
-            texttemplate='£%{value:.2f}'
-        )
-    )
-
-    fig.update_layout(
-        title={
-            'text': (
-                f"Monthly Pocket Money"
-                f"<br><span style='font-size:12px; display:block; margin-top:10px;'>Today's Date: {today_str}</span>"
-                f"<br><span style='font-size:12px; display:block; margin-top:10px;'>Start Date: {start_date}</span>"
-            ),
-            'y': 0.95,
-            'x': 0.5,
-            'xanchor': 'center',
-            'yanchor': 'top'
-        }
-    )
-
-    return dcc.Graph(
-        id="pocket-money-pie",
-        figure=fig
-    )
-
-# visual for the savings growth of my account
-def savings_line_graph():
-    # call the function that returns balances in savings account across months
-    df = data.savings_growth_history()  # DataFrame with 'month' and 'amount' columns
-
-    return dcc.Graph(
-        figure=go.Figure(
-            data=[go.Scatter(
-                x=df['month'],         # months on x-axis
-                y=df['amount'],        # balance on y-axis
-                mode='lines+markers',
-                line=dict(color="#000D80"),
-                name='Savings Balance'
-            )],
-            layout=go.Layout(
-                title={
-                    'text': "Savings Growth",
-                    'y': 0.95,
-                    'x': 0.5,
-                    'xanchor': 'center',
-                    'yanchor': 'top'
-                },
-                xaxis_title="Month",
-                yaxis_title="Balance (£)",
-                font=dict(
-                    family="Comfortaa, sans-serif"
-                )
+            sort = False,
+            textinfo='label+percent',
+            hole=0.4,
+            marker=dict(
+                colors=colors,
+                line=dict(color='#000000', width=1)
             )
-        )
-    )
-
-# visual for most spent categories in a month 
-def categories_bar_graph():
-    today = datetime.now()
-    month = today.strftime("%B").upper()
-    year = today.year
-
-    # call the data, and filter for Direction == OUT to track money leaving the account
-    df = data.biggest_expenses_in_current_month(month, year) 
-    df = df[df['Direction'] == 'OUT']
-
-    fig = go.Figure(
-        data=[go.Bar(
-            x=df['Category'],
-            y=df['Total Expenditure'],
-            marker_color="#FF9900",
-            name='Amount Spent'
         )]
     )
 
     fig.update_layout(
-        title={
-            'text': f"Top Spending Categories This Month ({month.title()} {year})",
-            'y': 0.95,
-            'x': 0.5,
-            'xanchor': 'center',
-            'yanchor': 'top'
-        },
-        xaxis_title="Category",
-        yaxis_title="Amount (£)",
+        title=dict(
+            text='Pocket Money',
+            x=0.5,
+            xanchor='center',
+            font=dict(size=22, family='Arial', color='#333')
+        )
     )
 
-    fig.add_annotation(
-        text=f"Total Spent = £{round(sum(df['Total Expenditure']), 2)}",
-        x=0.5, xref="paper",
-        y=1.2, yref="paper",
-        showarrow=False,
-        font=dict(size=15)
+    return dcc.Graph(figure=fig, id='pocket_money_donut')
+
+# groceries donut 
+def groceries_donut_chart():
+
+    _, groceries = data.monthly_balance()
+    labels = ['Remaining', 'Spent']
+    values = [groceries[0], groceries[1]]  
+    colors = ['#008000', '#cc0000']  
+
+    fig = go.Figure(
+        data=[go.Pie(
+            labels=labels,
+            values=values,
+            sort = False,
+            textinfo='label+percent',
+            hole=0.4,
+            marker=dict(
+                colors=colors,
+                line=dict(color='#000000', width=1)
+            )
+        )]
     )
 
-    return dcc.Graph(
-        id='category-bar-graph',
-        figure=fig
+    fig.update_layout(
+        title=dict(
+            text='Groceries',
+            x=0.5,
+            xanchor='center',
+            font=dict(size=22, family='Arial', color='#333')
+        )
     )
 
-# visual for a table containing spending information for a given time period 
-def transactions_table():
+    return dcc.Graph(figure=fig, id='groceries_donut')
 
-    # last date of the table is today, start date is start of the month 
-    end_date = datetime.now()
-    start_date = end_date.replace(day=1)
+# savings line
+import plotly.graph_objects as go
+from dash import dcc
+import pandas as pd
 
-    df = data.transactions(start_date, end_date)
+def savings_line():
+    # get the data
+    savings_df = data.savings_growth_history()
 
-    return dash_table.DataTable(
-        id = 'spending_table',
-        columns=[{"name": i, "id" : i} for i in df.columns],
-        data=df.to_dict('records'), 
-        style_cell={
-            "fontFamily": "Comfortaa, sans-serif",
-            "textAlign": "left",
-            "padding": "5px"
-        },
-        style_cell_conditional=[
-            {"if": {"column_id": "Amount"}, "textAlign": "center"},
-            {"if": {"column_id": "Currency"}, "textAlign": "center"},
-            {"if": {"column_id": "Direction"}, "textAlign": "center"},
-        ],
-        page_size=20,
-        filter_action="native",
-        dropdown={
-            "Category": {   # column id
-                "options": [
-                    {"label": c, "value": c}
-                    for c in df["Category"].unique()
-                ]
-            }
-        },
-        style_header={
-            'fontWeight' : 'bold'
-        },
-        style_table={'overflowX': 'auto'},  # horizontal scroll if needed
+    # convert dates to datetime
+    savings_df['display_date'] = pd.to_datetime(savings_df['display_date'], format='%d/%m/%Y')
+
+    x_values = savings_df['display_date'].to_list()
+    y_values = savings_df['absolute_balance'].to_list()
+
+    # Create the figure with improved design
+    fig = go.Figure(
+        data=go.Scatter(
+            x=x_values,
+            y=y_values,
+            mode='lines+markers',
+            line=dict(color='#1f77b4', width=3, shape='spline'),  # smooth line
+            marker=dict(size=10, color='#1f77b4', symbol='circle', line=dict(width=2, color='white')),
+            hovertemplate='%{x|%b %Y}<br>Balance: £%{y:,.2f}<extra></extra>'  # cleaner hover
+        )
     )
 
-############------CALLBACKS------###############
+    fig.update_layout(
+        title=dict(
+            text='Savings',
+            x=0.5,
+            xanchor='center',
+            font=dict(size=22, family='Arial', color='#333')
+        ),
+        xaxis=dict(
+            title='Month',
+            showgrid=True,
+            gridcolor='rgba(200,200,200,0.2)',
+            tickformat='%b %Y',
+            tickangle=-45,
+            showline=True,
+            linecolor='rgba(200,200,200,0.8)',
+            zeroline=False
+        ),
+        yaxis=dict(
+            title='Balance (£)',
+            showgrid=True,
+            gridcolor='rgba(200,200,200,0.2)',
+            showline=True,
+            linecolor='rgba(200,200,200,0.8)',
+            zeroline=False,
+            tickprefix='£'
+        ),
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        hovermode='x unified',
+        showlegend=False,
+        margin=dict(l=60, r=20, t=80, b=80)
+    )
 
-@app.callback(
-    Output("spending_table", "data"),
-    Input("category-bar-graph", "clickData")
-)
-def update_table(clickData):
+    # Optional: Add a subtle gradient fill under the line for style
+    # Add gradient-like effect without forcing y=0
+    fig.add_traces(go.Scatter(
+        x=x_values,
+        y=y_values,
+        mode='lines',
+        line=dict(color='rgba(31, 119, 180, 0)'),  # invisible line
+        fill='none',  # do NOT fill to zero
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+
+
+    return dcc.Graph(figure=fig, id='savings_line')
+
     
-    # if no bar clicked, show current month’s full data
-    end_date = datetime.now()
-    start_date = end_date.replace(day=1)
-    df = data.transactions(start_date, end_date)
-
-    if clickData is None:
-        return df.to_dict("records")
-
-    # extract the clicked category
-    category_clicked = clickData["points"][0]["x"]
-
-    # filter dataframe
-    df_filtered = df[df["Category"] == category_clicked]
-
-    return df_filtered.to_dict("records")
 
 app.layout = dashboard()
 if __name__ == "__main__":
     app.run(debug=True)
-    
