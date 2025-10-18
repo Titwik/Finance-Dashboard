@@ -23,7 +23,8 @@ def dashboard():
         ], style={"display": "flex"}),
 
         html.Div([
-            html.Div(savings_line(), style={"width": "50%", "padding": "10px"})
+            html.Div(savings_line(), style={"width": "50%", "padding": "10px"}),
+            html.Div(categories_bar(), style={"width": "50%", "padding": "10px"})
         ], style={"display": "flex"})
     ])
 
@@ -96,10 +97,6 @@ def groceries_donut_chart():
     return dcc.Graph(figure=fig, id='groceries_donut')
 
 # savings line
-import plotly.graph_objects as go
-from dash import dcc
-import pandas as pd
-
 def savings_line():
     # get the data
     savings_df = data.savings_growth_history()
@@ -170,7 +167,65 @@ def savings_line():
 
     return dcc.Graph(figure=fig, id='savings_line')
 
-    
+# categories bar chart
+def categories_bar():
+
+    # set the current month 
+    current_month = datetime.now().strftime('%B')
+    current_year = datetime.now().year
+
+    # get the data  
+    categories_df = data.biggest_expenses_in_current_month(current_month, current_year)
+    categories_df = categories_df[categories_df['Direction'] == 'OUT']
+
+    # make the figure
+    x_values = categories_df['Category'].to_list()
+    y_values = categories_df['Total Expenditure'].to_list()
+
+    fig = go.Figure(
+        data=go.Bar(
+            x=x_values,
+            y=y_values,
+            text=[f"£{v:,.2f}" for v in y_values],
+            textposition='auto',
+            marker=dict(
+                color='#ff6f61',  # modern dashboard color
+                line=dict(color='rgba(0,0,0,0.1)', width=1)
+            ),
+            hovertemplate='%{x}<br>Total: £%{y:,.2f}<extra></extra>'
+        )
+    )
+
+    # layout styling
+    fig.update_layout(
+        title=dict(
+            text=f"Top Expenses in {current_month} {current_year}",
+            x=0.5,
+            xanchor='center',
+            font=dict(size=22, family='Arial', color='#333')
+        ),
+        xaxis=dict(
+            title='Category',
+            showgrid=False,
+            showline=True,
+            linecolor='rgba(200,200,200,0.8)',
+            tickangle=-45
+        ),
+        yaxis=dict(
+            title='Expenditure (£)',
+            showgrid=True,
+            gridcolor='rgba(200,200,200,0.2)',
+            showline=True,
+            linecolor='rgba(200,200,200,0.8)',
+            tickprefix='£'
+        ),
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        margin=dict(l=60, r=20, t=80, b=120),
+        hovermode='x unified'
+    )
+
+    return dcc.Graph(figure=fig, id='categories_bar')
 
 app.layout = dashboard()
 if __name__ == "__main__":
