@@ -1,15 +1,26 @@
-
 import os
 import json
 import time
 import requests
 import pandas as pd
-import yfinance as yf
+import datetime as dt
+#import yfinance as yf
 from pathlib import Path
 from dotenv import load_dotenv
+from pymongo import MongoClient
 from datetime import datetime, timedelta
 
+# ===================== CREDENTIALS ===================== #
+
 load_dotenv()  # Loads variables from .env into the environment
+api_username = os.getenv("investment_api_key")
+api_password = os.getenv("investment_api_secret")
+mongo_uri = os.getenv("MONGO_URI")  
+db_name = "investment_tracker"
+
+# initialize mongoDB
+client = MongoClient(mongo_uri)
+db = client[db_name]
 
 class StarlingAPI:
     def __init__(self, max_retries=3, backoff=2):
@@ -89,6 +100,8 @@ class StarlingAPI:
 
         return self._request('GET', url)
 
+# ===================== BANK API ===================== #
+
 # define a function for the monthly pocket money and groceries expenses
 def monthly_balance():
 
@@ -112,14 +125,6 @@ def monthly_balance():
     end_date_str = end_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     start_date_str = start_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-    # get the transaction history
-    transaction_history = api.get_transaction_statement(
-        accountUid,
-        categoryUid,
-        start_date_str,
-        end_date_str
-    )
-
     def pocket_money():
 
         '''
@@ -127,6 +132,14 @@ def monthly_balance():
         '''
         pocket_money_allowance = 18000 # in minorUnits
         exclusions = ('investments', 'rent', 'bills', 'expenses', 'income', 'saving', 'groceries') # categories not to consider for personal spending
+
+        # get the transaction history
+        transaction_history = api.get_transaction_statement(
+            accountUid,
+            categoryUid,
+            start_date_str,
+            end_date_str
+        )
 
         total_pocket_money_spent = 0
         for tx in transaction_history:
@@ -146,6 +159,19 @@ def monthly_balance():
         """
 
         groceries_allowance = 12000 # in minorUnits
+
+        spaces = api.get_savings_spaces(accountUid)['savingsGoals']
+        for space in spaces:
+            if space['name'] == 'Groceries':
+                savingUid = space['savingsGoalUid']
+                break
+
+        transaction_history = api.get_transaction_statement(
+            accountUid,
+            savingUid,
+            start_date_str,
+            end_date_str
+        )
 
         total_groceries_spent = 0
         for tx in transaction_history:
@@ -212,48 +238,58 @@ def savings_growth_history():
 
 # function to return the biggest expenses in the month 
 def biggest_expenses_in_current_month(month, year):
-
     """
-    Returns a DataFrame of the largest spending categories for the given month and year.
-
-    Args:
-        month (str): One of ["JANUARY", "FEBRUARY", ..., "DECEMBER"] (case-insensitive)
-        year (int): The year as an integer, e.g., 2025
-
-    Returns:
-        pd.DataFrame: Sorted list of spending categories and their total expenditure.
-                      Returns None and prints a message if no activity.
+    Returns a DataFrame of the largest spending categories for the given month and year,
+    including money spent from the 'Groceries' savings space.
     """
 
     api = StarlingAPI()
 
     # Get accounts
     accounts_data = api.get_accounts()
-    main_accountUid = accounts_data['accounts'][0]['accountUid']
-    main_categories = api.get_monthly_categories(main_accountUid, int(year), month.upper())
+    accountUid = accounts_data['accounts'][0]['accountUid']
 
-    if len(main_categories['breakdown']) == 0:
-        return print('No account activity for the chosen time.')
-    
-    # convert to a df so plotly can visualize it
+    # Get categories for the month
+    categoryUid = api.get_monthly_categories(accountUid, int(year), month.upper())
+
+    # get the amount spent on groceries
+    _, groceries = monthly_balance()
+    groceries_spent = groceries[1]
+
+    if len(categoryUid['breakdown']) == 0 and groceries_spent == 0:
+        print('No account activity for the chosen time.')
+        return None
+
+    # Convert to DataFrame
     category_list = [
         {
             'Category': cat['spendingCategory'].title().replace("_", " "),
             'Total Expenditure': cat['netSpend'],
             'Direction': cat['netDirection']
         }
-        for cat in main_categories['breakdown']
+        for cat in categoryUid['breakdown']
     ]
 
-    category_df = (
-    pd.DataFrame(category_list)
-      .sort_values(
-          by=["Direction", "Total Expenditure"], 
-          ascending=[False, False]
-      )
-    )
+    category_df = pd.DataFrame(category_list)
 
+    # Remove unwanted categories
     category_df = category_df[~category_df['Category'].isin(['Saving', 'Investments'])]
+
+    # Add Groceries from the savings space
+    if groceries_spent > 0:
+        if 'Groceries' in category_df['Category'].values:
+            category_df.loc[category_df['Category'] == 'Groceries', 'Total Expenditure'] += groceries_spent
+        else:
+            category_df = pd.concat([
+                category_df,
+                pd.DataFrame([{'Category': 'Groceries', 'Total Expenditure': groceries_spent, 'Direction': 'OUT'}])
+            ], ignore_index=True)
+
+    # Sort by expenditure
+    category_df = category_df.sort_values(
+        by=["Direction", "Total Expenditure"], 
+        ascending=[False, False]
+    )
 
     return category_df
 
@@ -269,13 +305,13 @@ def transactions(start_date, end_date):
     # Call the API
     api = StarlingAPI()
     accounts_data = api.get_accounts()
-    main_accountUid = accounts_data['accounts'][0]['accountUid']
+    accountUid = accounts_data['accounts'][0]['accountUid']
     main_categoryUid = accounts_data['accounts'][0]['defaultCategory']
 
     # Get transactions
     try:
         transactions = api.get_transaction_statement(
-            main_accountUid,
+            accountUid,
             main_categoryUid,
             start_iso,
             end_iso
@@ -286,6 +322,7 @@ def transactions(start_date, end_date):
 
     transaction_list = []
     for tx in transactions:
+
         # get relevant attributes that may be missing
         settled_date_str = tx.get("transactionTime")
 
@@ -320,23 +357,176 @@ def transactions(start_date, end_date):
 
     return transactions_df
 
+# ===================== TRADING212 API ===================== #
+
+# get current portfolio data
+def portfolio():
+    
+    url = "https://live.trading212.com/api/v0/equity/portfolio"
+    response = requests.get(url, auth=(api_username, api_password))
+    response.raise_for_status()
+    
+    # Data is guaranteed to be the list of instruments from the API call
+    data = response.json()
+    
+    # Add timestamp to each instrument
+    for instrument in data:
+        instrument['timestampAdded'] = dt.datetime.now(dt.UTC)
+
+    return data
+
+# get historical transactions from the last year
+def investment_transactions():
+    base_url = "https://live.trading212.com"
+    endpoint = "/api/v0/equity/history/orders"
+    current_path = endpoint
+    all_orders = []
+
+    # Calculate the cutoff date
+    three_months_ago = datetime.now() - timedelta(days=30 * 3) # 3 months back
+
+    while current_path:
+
+        url = base_url + current_path
+        response = requests.get(url, auth=(api_username, api_password))
+        response.raise_for_status()
+        data = response.json()
+
+        if "items" in data and isinstance(data["items"], list):
+    
+            should_stop = False
+            for order in data["items"]:
+                date_created_str = order.get('dateCreated')
+                
+                if date_created_str:
+                    transaction_date = datetime.strptime(date_created_str, "%Y-%m-%dT%H:%M:%S.%fZ")
+                    
+                    if transaction_date < three_months_ago:
+                        should_stop = True
+                        break
+
+                filled_qty = order.get("filledQuantity", 0)
+
+                # Mark transaction type
+                if filled_qty > 0:
+                    order["transaction_type"] = "BUY"
+                elif filled_qty < 0:
+                    order["transaction_type"] = "SELL"
+                else:
+                    order["transaction_type"] = "UNKNOWN"
+
+                all_orders.append(order)
+
+            # Terminate the outer loop if cutoff was reached
+            if should_stop:
+                current_path = None
+                break 
+
+        current_path = data.get("nextPagePath")
+        if not current_path:
+            break
+
+    # save the transaction history to mongodb
+    def save_to_mongo(orders):
+
+        collection = db['investment_transactions']
+
+        if not orders:
+            print("No transactions to process.")
+            return
+
+        new_orders_to_insert = []
+        for order in orders:
+            if not collection.find_one({"id": order["id"]}):
+                new_orders_to_insert.append(order)
+        
+        if new_orders_to_insert:
+            collection.insert_many(new_orders_to_insert)
+            print(f"Saved {len(new_orders_to_insert)} new transactions to MongoDB.")
+        else:
+            print("No new transactions found to save.")
+
+    # save the transactions to mongodb
+    save_to_mongo(all_orders)
+
+    return all_orders
+
+# get the net deposits and save in mongodb
+# net deposit must be saved every day, so that net P/L can be tracked per day.
+# save a snapshot in Mongodb
+def portfolio_performance():
+
+    transaction_coll = db["investment_transactions"]
+    conversion_rate_usd_to_gbp = 0.75  # update if needed
+
+    # save any new transactions to DB
+    investment_transactions()
+
+    # sum fillCost
+    net_deposit_result = list(transaction_coll.aggregate([
+        {"$group": {"_id": None, "totalFillCost": {"$sum": "$fillCost"}}}
+    ]))
+    net_deposit = net_deposit_result[0]['totalFillCost'] if net_deposit_result else 0
+
+    # get current portfolio value
+    portfolio_data = portfolio()
+
+    portfolio_value = 0
+    for ins in portfolio_data:
+        ticker = ins['ticker']
+        current_price = ins['currentPrice']
+        shares = ins['quantity']
+
+        if "_US_" in ticker:
+            current_price *= conversion_rate_usd_to_gbp
+        elif "SGLNl_EQ" in ticker:
+            current_price /= 100
+
+        portfolio_value += shares * current_price
+
+    portfolio_value = round(portfolio_value, 2)
+
+    # save snapshot 
+    # if a snapshot of today exists, replace it
+    collection = db['portfolio_value']
+    
+    today = dt.datetime.now(dt.UTC).date()
+    latest_entry = db['portfolio_value'].find_one(
+        sort=[('timestampAdded', -1)]
+    )
+
+    if latest_entry['timestampAdded'].date() == today:
+        collection.delete_one({'_id': latest_entry['_id']})
+
+    # insert today's latest snapshot
+    insert_dict = {
+        'net_deposit': net_deposit,
+        'portfolio_value': portfolio_value,
+        'portfolio': [
+        {
+            'ticker': ins['ticker'],
+            'quantity': ins['quantity'],
+            'price_gbp': round(
+                ins['currentPrice'] * conversion_rate_usd_to_gbp if "_US_" in ins['ticker'] else
+                ins['currentPrice'] / 100 if "SGLNl_EQ" in ins['ticker'] else
+                ins['currentPrice'], 2
+            )
+        } for ins in portfolio_data
+    ],
+
+        'timestampAdded': dt.datetime.now(dt.timezone.utc)
+    }
+
+    # save to mongodb
+    collection.insert_one(insert_dict)
+    print('Inserted to DB')
+
+    return net_deposit, portfolio_value
+
+# ===================== EXECUTION SCRIPT ===================== #
+
 if __name__ == "__main__":
 
-    end_date = '05/04/2025'
-    start_date = '02/04/2025'
+    api = StarlingAPI()
 
-    end_dt = datetime.strptime(end_date, "%d/%m/%Y")
-    start_dt = datetime.strptime(start_date, "%d/%m/%Y")
-
-    # Convert to ISO format for the API
-    #end_date_str = end_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    #start_date_str = start_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-
-    #api = StarlingAPI()
-    # Get accounts
-    #accounts_data = api.get_accounts()
-    #accountUid = accounts_data['accounts'][0]['accountUid']
-    #categoryUid = accounts_data['accounts'][0]['defaultCategory']
-    print(savings_growth_history())
-
-    
+    portfolio_performance()
