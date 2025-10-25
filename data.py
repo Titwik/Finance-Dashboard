@@ -16,7 +16,7 @@ load_dotenv()  # Loads variables from .env into the environment
 api_username = os.getenv("investment_api_key")
 api_password = os.getenv("investment_api_secret")
 mongo_uri = os.getenv("MONGO_URI")  
-db_name = "investment_tracker"
+db_name = "finance_dashboard"
 
 # initialize mongoDB
 client = MongoClient(mongo_uri)
@@ -111,19 +111,6 @@ def monthly_balance():
     # account data
     account_data = api.get_accounts()
     accountUid = account_data['accounts'][0]['accountUid']
-    categoryUid = account_data['accounts'][0]['defaultCategory']
-
-    # payday is the 27th, so budget from the 27th onwards
-    today = datetime.now()
-    end_date = today
-    if today.day >= 27:
-        start_date = today.replace(day=27)
-    else:
-        temp_date = today.replace(day=1)
-        last_month = temp_date - timedelta(days=1) # subtract 1 from the last day of month to go to 'last month'
-        start_date = last_month.replace(day=27)
-    end_date_str = end_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    start_date_str = start_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
     def pocket_money():
 
@@ -131,24 +118,12 @@ def monthly_balance():
         Logic: I have 180 GBP for casual, guilt-free spending. Check if category is NOT investments, rent, utilities etc and subtract from 180 GBP
         '''
         pocket_money_allowance = 18000 # in minorUnits
-        exclusions = ('investments', 'rent', 'bills', 'expenses', 'income', 'saving', 'groceries') # categories not to consider for personal spending
 
-        # get the transaction history
-        transaction_history = api.get_transaction_statement(
-            accountUid,
-            categoryUid,
-            start_date_str,
-            end_date_str
-        )
-
-        total_pocket_money_spent = 0
-        for tx in transaction_history:
-            if (tx['spendingCategory'].lower() not in exclusions and 
-                tx['direction'] == 'OUT'
-            ):
-                total_pocket_money_spent += tx['amount']['minorUnits']
-
-        remaining_pocket_money = pocket_money_allowance - total_pocket_money_spent
+        remaining_pocket_money = api.get_balance(accountUid)['effectiveBalance']['minorUnits']
+        if remaining_pocket_money > 18000:
+            remaining_pocket_money = 18000 # prevents the visual from breaking
+        
+        total_pocket_money_spent = pocket_money_allowance - remaining_pocket_money
 
         return remaining_pocket_money/100, total_pocket_money_spent/100
     
@@ -158,28 +133,19 @@ def monthly_balance():
         Logic: I have 120 GBP for groceries, so 100% of the visual should be 120. I will then deduct from 120 any amount that is classed as 'groceries' in the transaction statement category.
         """
 
-        groceries_allowance = 12000 # in minorUnits
+        #groceries_allowance = 12000 # in minorUnits
 
         spaces = api.get_savings_spaces(accountUid)['savingsGoals']
         for space in spaces:
             if space['name'] == 'Groceries':
-                savingUid = space['savingsGoalUid']
+                grocery_space = space
                 break
-
-        transaction_history = api.get_transaction_statement(
-            accountUid,
-            savingUid,
-            start_date_str,
-            end_date_str
-        )
-
-        total_groceries_spent = 0
-        for tx in transaction_history:
-            if tx['spendingCategory'].lower() == 'groceries' and tx['direction'] == 'OUT':
-                total_groceries_spent += tx['amount']['minorUnits']
-
-        remaining_groceries = groceries_allowance - total_groceries_spent
-
+        
+        #savingUid = grocery_space['savingsGoalUid']
+        groceries_allowance = grocery_space['target']['minorUnits']
+        remaining_groceries = grocery_space['totalSaved']['minorUnits']
+        total_groceries_spent = groceries_allowance - remaining_groceries
+        
         return remaining_groceries/100, total_groceries_spent/100
     
     return pocket_money(), grocery_balance()
@@ -192,6 +158,7 @@ def savings_growth_history():
     """
 
     api = StarlingAPI()
+    collection = db['portfolio_value']
 
     # Get accounts
     accounts_data = api.get_accounts()
@@ -202,15 +169,23 @@ def savings_growth_history():
     current_balance_minor = api.get_balance(savings_accountUid)['effectiveBalance']['minorUnits']
     current_balance = current_balance_minor / 100  # convert to pounds
 
-    # Get transactions since start date
-    start_date = datetime.strptime("2025-07-27", "%Y-%m-%d").strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    end_date = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    # Get transactions
+    today = dt.datetime.now(dt.UTC)
+    if collection.count_documents({}) == 0:
+        start_date = today.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    else:
+        start_date = (today - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    end_date = today.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     transactions = api.get_transaction_statement(
         savings_accountUid,
         savings_categoryUid,
         start_date,
         end_date
     )
+
+    # insert the data in MongoDB
+    collection.insert_many(transactions)
 
     # Create DataFrame
     df = pd.DataFrame(transactions)
@@ -451,9 +426,7 @@ def investment_transactions():
 
     return all_orders
 
-# get the net deposits and save in mongodb
 # net deposit must be saved every day, so that net P/L can be tracked per day.
-# save a snapshot in Mongodb
 def portfolio_performance():
 
     transaction_coll = db["investment_transactions"]
@@ -500,13 +473,13 @@ def portfolio_performance():
 
     # insert today's latest snapshot
     insert_dict = {
-        'net_deposit': net_deposit,
-        'portfolio_value': portfolio_value,
+        'netDeposit': net_deposit,
+        'portfolioValue': portfolio_value,
         'portfolio': [
         {
             'ticker': ins['ticker'],
             'quantity': ins['quantity'],
-            'price_gbp': round(
+            'priceGBP': round(
                 ins['currentPrice'] * conversion_rate_usd_to_gbp if "_US_" in ins['ticker'] else
                 ins['currentPrice'] / 100 if "SGLNl_EQ" in ins['ticker'] else
                 ins['currentPrice'], 2
