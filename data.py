@@ -158,7 +158,7 @@ def savings_growth_history():
     """
 
     api = StarlingAPI()
-    collection = db['portfolio_value']
+    collection = db['savings']
 
     # Get accounts
     accounts_data = api.get_accounts()
@@ -172,7 +172,7 @@ def savings_growth_history():
     # Get transactions
     today = dt.datetime.now(dt.UTC)
     if collection.count_documents({}) == 0:
-        start_date = today.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        start_date = dt.datetime(2025, 7, 1, 0, 0, 0).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     else:
         start_date = (today - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
@@ -183,9 +183,24 @@ def savings_growth_history():
         start_date,
         end_date
     )
+    
+    # assign feedItemUid as _id
+    for tx in transactions:
+        tx["_id"] = tx["feedItemUid"]
 
-    # insert the data in MongoDB
-    collection.insert_many(transactions)
+    # insert ignoring duplicates
+    if transactions:
+        existing_ids_cursor = collection.find(
+            {"_id": {"$in": [t["_id"] for t in transactions]}},
+            {"_id": 1}
+        )
+        existing_ids = {doc["_id"] for doc in existing_ids_cursor}
+        new_transactions = [t for t in transactions if t["_id"] not in existing_ids] if False else [t for t in transactions if t["_id"] not in existing_ids]
+        if new_transactions:
+            try:
+                collection.insert_many(new_transactions)
+            except Exception as e:
+                print(f"[savings_growth_history] Failed to insert transactions: {e}")
 
     # Create DataFrame
     df = pd.DataFrame(transactions)
@@ -283,17 +298,41 @@ def transactions(start_date, end_date):
     accountUid = accounts_data['accounts'][0]['accountUid']
     main_categoryUid = accounts_data['accounts'][0]['defaultCategory']
 
+    # get transactions from saving spaces
+    spaces = api.get_savings_spaces(accountUid)['savingsGoals']
+    for space in spaces:
+        if space['name'] == 'Groceries':
+            groceryUid = space['savingsGoalUid']
+            break
+    
+    for space in spaces:
+        if space['name'] == 'Bills':
+            billsUid = space['savingsGoalUid']
+            break
+
     # Get transactions
-    try:
-        transactions = api.get_transaction_statement(
-            accountUid,
-            main_categoryUid,
-            start_iso,
-            end_iso
-        )
-    except Exception as e:
-        print('Something went wrong:', e)
-        return pd.DataFrame()  # return empty DataFrame on error
+    general_transactions = api.get_transaction_statement(
+        accountUid,
+        main_categoryUid,
+        start_iso,
+        end_iso
+    )
+    
+    groceries_transactions = api.get_transaction_statement(
+        accountUid,
+        groceryUid,
+        start_iso,
+        end_iso
+    )
+    
+    bills_transactions = api.get_transaction_statement(
+        accountUid,
+        billsUid,
+        start_iso,
+        end_iso
+    )
+
+    transactions = general_transactions + groceries_transactions + bills_transactions
 
     transaction_list = []
     for tx in transactions:
@@ -356,33 +395,33 @@ def investment_transactions():
     endpoint = "/api/v0/equity/history/orders"
     current_path = endpoint
     all_orders = []
+    transaction_coll = db['investment_transactions']
 
-    # Calculate the cutoff date
-    three_months_ago = datetime.now() - timedelta(days=30 * 3) # 3 months back
+    # Only set a cutoff date if the collection is empty
+    three_months_ago = None
+    if transaction_coll.count_documents({}) > 0:
+        three_months_ago = datetime.now() - timedelta(days=30 * 3)  # 3 months back
 
     while current_path:
-
         url = base_url + current_path
         response = requests.get(url, auth=(api_username, api_password))
         response.raise_for_status()
         data = response.json()
 
         if "items" in data and isinstance(data["items"], list):
-    
             should_stop = False
+
             for order in data["items"]:
                 date_created_str = order.get('dateCreated')
-                
-                if date_created_str:
+
+                # Apply cutoff only if set
+                if three_months_ago and date_created_str:
                     transaction_date = datetime.strptime(date_created_str, "%Y-%m-%dT%H:%M:%S.%fZ")
-                    
                     if transaction_date < three_months_ago:
                         should_stop = True
                         break
 
                 filled_qty = order.get("filledQuantity", 0)
-
-                # Mark transaction type
                 if filled_qty > 0:
                     order["transaction_type"] = "BUY"
                 elif filled_qty < 0:
@@ -392,39 +431,26 @@ def investment_transactions():
 
                 all_orders.append(order)
 
-            # Terminate the outer loop if cutoff was reached
             if should_stop:
-                current_path = None
-                break 
+                break
 
         current_path = data.get("nextPagePath")
         if not current_path:
             break
 
-    # save the transaction history to mongodb
     def save_to_mongo(orders):
-
-        collection = db['investment_transactions']
-
         if not orders:
-            print("No transactions to process.")
+            #print("No transactions to process.")
             return
 
-        new_orders_to_insert = []
-        for order in orders:
-            if not collection.find_one({"id": order["id"]}):
-                new_orders_to_insert.append(order)
-        
-        if new_orders_to_insert:
-            collection.insert_many(new_orders_to_insert)
-            print(f"Saved {len(new_orders_to_insert)} new transactions to MongoDB.")
-        else:
-            print("No new transactions found to save.")
+        new_orders = [o for o in orders if not transaction_coll.find_one({"id": o["id"]})]
+        if new_orders:
+            transaction_coll.insert_many(new_orders)
+            #print(f"Saved {len(new_orders)} new transactions to MongoDB.")
+        #else:
+            #print("No new transactions found to save.")
 
-    # save the transactions to mongodb
     save_to_mongo(all_orders)
-
-    return all_orders
 
 # net deposit must be saved every day, so that net P/L can be tracked per day.
 def portfolio_performance():
@@ -434,6 +460,7 @@ def portfolio_performance():
 
     # save any new transactions to DB
     investment_transactions()
+    #time.sleep(3)
 
     # sum fillCost
     net_deposit_result = list(transaction_coll.aggregate([
@@ -459,22 +486,10 @@ def portfolio_performance():
 
     portfolio_value = round(portfolio_value, 2)
 
-    # save snapshot 
-    # if a snapshot of today exists, replace it
-    collection = db['portfolio_value']
-    
-    today = dt.datetime.now(dt.UTC).date()
-    latest_entry = db['portfolio_value'].find_one(
-        sort=[('timestampAdded', -1)]
-    )
-
-    if latest_entry['timestampAdded'].date() == today:
-        collection.delete_one({'_id': latest_entry['_id']})
-
-    # insert today's latest snapshot
+    # today's latest snapshot
     insert_dict = {
-        'netDeposit': net_deposit,
-        'portfolioValue': portfolio_value,
+        'netDeposit': round(net_deposit,2),
+        'portfolioValue': round(portfolio_value, 2),
         'portfolio': [
         {
             'ticker': ins['ticker'],
@@ -486,20 +501,99 @@ def portfolio_performance():
             )
         } for ins in portfolio_data
     ],
-
         'timestampAdded': dt.datetime.now(dt.timezone.utc)
     }
 
-    # save to mongodb
-    collection.insert_one(insert_dict)
-    print('Inserted to DB')
+    return insert_dict
 
-    return net_deposit, portfolio_value
+# portfolio + networth snapshot 
+def snapshot(latest_entry):
+
+    portfolio_coll = db['portfolio_value']
+    savings_coll = db['savings']
+    
+    today = dt.datetime.now(dt.UTC).date()
+    
+    if latest_entry['timestampAdded'].date() == today:
+        portfolio_coll.delete_one({'_id': latest_entry['_id']})
+
+    # get savings data 
+    savings_data = list(savings_coll.find())
+
+    savings_value = 0
+    for data in savings_data:
+
+        # compute the sum value
+        if data['direction'] == 'IN':
+            savings_value += data['sourceAmount']['minorUnits']/100
+        
+        elif data['direction'] == 'OUT':
+            savings_value -= data['sourceAmount']['minorUnits']/100 
+
+    snapshot = portfolio_performance()
+    snapshot['savingsTotal'] = round(savings_value, 2)
+    snapshot['netWorth'] = round(savings_value + snapshot['portfolioValue'], 2)
+
+    # save to mongodb
+    portfolio_coll.insert_one(snapshot)
+    
+    snapshot['timestampAdded'] = str(snapshot['timestampAdded'])
+    snapshot['_id'] = str(snapshot['_id'])
+    #print('Inserted to DB')
+
+    return snapshot
 
 # ===================== EXECUTION SCRIPT ===================== #
-
 if __name__ == "__main__":
 
-    api = StarlingAPI()
+    start_date = '1/11/2025'
+    end_date = '12/11/2025'
+    # Convert input strings to datetime objects
+    start_dt = datetime.strptime(start_date, "%d/%m/%Y")
+    end_dt = datetime.strptime(end_date, "%d/%m/%Y")
+    start_iso = start_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    end_iso   = end_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-    portfolio_performance()
+    # Call the API
+    api = StarlingAPI()
+    accounts_data = api.get_accounts()
+    accountUid = accounts_data['accounts'][0]['accountUid']
+    main_categoryUid = accounts_data['accounts'][0]['defaultCategory']
+
+    # get transactions from saving spaces
+    spaces = api.get_savings_spaces(accountUid)['savingsGoals']
+    for space in spaces:
+        if space['name'] == 'Groceries':
+            groceryUid = space['savingsGoalUid']
+            break
+    
+    for space in spaces:
+        if space['name'] == 'Bills':
+            billsUid = space['savingsGoalUid']
+            break
+
+    # Get transactions
+    general_transactions = api.get_transaction_statement(
+        accountUid,
+        main_categoryUid,
+        start_iso,
+        end_iso
+    )
+    
+    groceries_transactions = api.get_transaction_statement(
+        accountUid,
+        groceryUid,
+        start_iso,
+        end_iso
+    )
+    
+    bills_transactions = api.get_transaction_statement(
+        accountUid,
+        billsUid,
+        start_iso,
+        end_iso
+    )
+
+    transactions = general_transactions + groceries_transactions + bills_transactions
+
+    print(json.dumps(transactions, indent=4))

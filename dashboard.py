@@ -1,232 +1,402 @@
+import datetime as dt
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
-import data #  python file containing financial data
+import data
 import os
-import requests
 import dash
-from dash import dcc, html, Input, Output, callback, dash_table
-import plotly.express as px
-import plotly.graph_objs as go 
+from dash import dcc, html, dash_table
+import plotly.graph_objs as go
+from pymongo import MongoClient
+
+# Load environment
+load_dotenv()
+mongo_uri = os.getenv("MONGO_URI")
+db_name = "finance_dashboard"
+client = MongoClient(mongo_uri)
+db = client[db_name]
 
 app = dash.Dash(__name__)
 
-# dashboard files
+# ---------- GLOBAL DARK STYLE ----------
+DARK_BG = "#121212"
+CARD_BG = "#1E1E1E"
+TEXT_COLOR = "#E0E0E0"
+ACCENT = "#00E3CC"
+FONT_FAMILY = "Poppins, sans-serif"
+
+app.title = "Personal Finance Dashboard"
+app.css.config.serve_locally = True
+
+# ---------- REUSABLE STYLES ----------
+CARD_STYLE = {
+    "backgroundColor": CARD_BG,
+    "padding": "20px",
+    "borderRadius": "20px",
+    "boxShadow": "0 4px 15px rgba(0, 0, 0, 0.4)",
+    "color": TEXT_COLOR,
+    "textAlign": "center",
+    "flex": "1",
+}
+
+GRAPH_STYLE = {"backgroundColor": CARD_BG, "borderRadius": "20px", "padding": "20px"}
+
+# ---------- LAYOUT ----------
 def dashboard():
-    return html.Div([
-        html.H1("Personal Finance Dashboard", style={"textAlign": "center"}),
+    return html.Div(
+        style={
+            "backgroundColor": DARK_BG,
+            "minHeight": "100vh",
+            "padding": "20px 40px",
+            "fontFamily": FONT_FAMILY,
+            "color": TEXT_COLOR,
+            "display": "flex",
+            "flexDirection": "column",
+            "alignItems": "center",
+        },
+        children=[
+            html.H1(
+                "Personal Finance Dashboard",
+                style={
+                    "textAlign": "center",
+                    "color": ACCENT,
+                    "marginBottom": "20px",
+                    "fontSize": "32px",
+                    "fontWeight": "600",
+                },
+            ),
 
-        # Row 1: Pocket Money & Groceries Donuts side by side
-        html.Div([
-            html.Div(pocket_money_donut_chart(), style={"width": "50%", "padding": "10px"}),
-            html.Div(groceries_donut_chart(), style={"width": "50%", "padding": "10px"})
-        ], style={"display": "flex"}),
+            # ---------- FIRST ROW ----------
+            html.Div(
+                [
+                    html.Div(pocket_money_donut_chart(), style=GRAPH_STYLE),
+                    html.Div(groceries_donut_chart(), style=GRAPH_STYLE),
+                    html.Div(horizontal_categories_bar(), style=GRAPH_STYLE),
+                ],
+                style={
+                    "display": "grid",
+                    "gridTemplateColumns": "2fr 2fr 5fr",
+                    "gap": "20px",
+                    "width": "100%",
+                    "maxWidth": "1800px",
+                    "marginBottom": "20px",
+                },
+            ),
 
-        html.Div([
-            html.Div(savings_line(), style={"width": "50%", "padding": "10px"}),
-            html.Div(categories_bar(), style={"width": "50%", "padding": "10px"})
-        ], style={"display": "flex"})
-    ])
+            # ---------- SECOND ROW ----------
+            html.Div(
+                [
+                    html.Div(savings_line(), style=GRAPH_STYLE),
 
-#---------------- GRAPH FUNCTIONS ----------------#
-# pocket money donut 
+                    html.Div(
+                        net_worth_card(),
+                        style={
+                            **GRAPH_STYLE,
+                            "display": "flex",
+                            "alignItems": "center",
+                            "justifyContent": "center",
+                        },
+                    ),
+
+                    html.Div(portfolio_line(), style=GRAPH_STYLE),
+                ],
+                style={
+                    "display": "grid",
+                    "gridTemplateColumns": "5fr 2fr 5fr",
+                    "gap": "20px",
+                    "width": "100%",
+                    "maxWidth": "1800px",
+                    "marginBottom": "20px",
+                },
+            ),
+
+            # ---------- THIRD ROW: TRANSACTIONS TABLE ----------
+            html.Div(
+                [
+                    html.Div(
+                        transactions_table(),
+                        style={
+                            "backgroundColor": CARD_BG,
+                            "padding": "20px",
+                            "borderRadius": "20px",
+                            "width": "100%",
+                            "maxWidth": "1800px",
+                            "boxShadow": "0 4px 15px rgba(0, 0, 0, 0.4)",
+                        },
+                    )
+                ],
+                style={
+                    "width": "100%",
+                    "display": "flex",
+                    "justifyContent": "center",
+                },
+            ),
+        ],
+    )
+
+
+# ---------- DARK MODE PLOTLY STYLES ----------
+def dark_layout(fig, title):
+    fig.update_layout(
+        template="plotly_dark",
+        title=dict(text=title, x=0.5, font=dict(size=22, color=ACCENT)),
+        plot_bgcolor=CARD_BG,
+        paper_bgcolor=CARD_BG,
+        font=dict(color=TEXT_COLOR, family=FONT_FAMILY),
+        hovermode="x unified",
+        margin=dict(l=60, r=20, t=80, b=80),
+        xaxis=dict(showgrid=False, linecolor="#333"),
+        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.1)"),
+        showlegend=False,
+    )
+    return fig
+
+
+# ---------- CHARTS ----------
 def pocket_money_donut_chart():
-
     pocket_money, _ = data.monthly_balance()
-    labels = ['Remaining', 'Spent']
-    #values = [pocket_money[0], pocket_money[1]]  
-    values = [100,90]
-    colors = ['#008000', '#cc0000']  
+    labels = ["Remaining", "Spent"]
+    values = [pocket_money[0], pocket_money[1]]
+    colors = ["#26A69A", "#EF5350"]
 
     fig = go.Figure(
-        data=[go.Pie(
-            labels=labels,
-            values=values,
-            sort = False,
-            textinfo='label+percent',
-            hole=0.4,
-            marker=dict(
-                colors=colors,
-                line=dict(color='#000000', width=1)
+        data=[
+            go.Pie(
+                labels=labels,
+                values=values,
+                hole=0.6,
+                marker=dict(colors=colors, line=dict(color="#000", width=1)),
+                textinfo="label+percent",
             )
-        )]
+        ]
     )
+    return dcc.Graph(figure=dark_layout(fig, "Pocket Money"))
 
-    fig.update_layout(
-        title=dict(
-            text='Pocket Money',
-            x=0.5,
-            xanchor='center',
-            font=dict(size=22, family='Arial', color='#333')
-        )
-    )
 
-    return dcc.Graph(figure=fig, id='pocket_money_donut')
-
-# groceries donut 
 def groceries_donut_chart():
-
     _, groceries = data.monthly_balance()
-    labels = ['Remaining', 'Spent']
-    values = [groceries[0], groceries[1]]  
-    colors = ['#008000', '#cc0000']  
+    labels = ["Remaining", "Spent"]
+    values = [groceries[0], groceries[1]]
+    colors = ["#26A69A", "#EF5350"]
 
     fig = go.Figure(
-        data=[go.Pie(
-            labels=labels,
-            values=values,
-            sort = False,
-            textinfo='label+percent',
-            hole=0.4,
-            marker=dict(
-                colors=colors,
-                line=dict(color='#000000', width=1)
+        data=[
+            go.Pie(
+                labels=labels,
+                values=values,
+                hole=0.6,
+                marker=dict(colors=colors, line=dict(color="#000", width=1)),
+                textinfo="label+percent",
             )
-        )]
+        ]
     )
+    return dcc.Graph(figure=dark_layout(fig, "Groceries"))
 
-    fig.update_layout(
-        title=dict(
-            text='Groceries',
-            x=0.5,
-            xanchor='center',
-            font=dict(size=22, family='Arial', color='#333')
-        )
-    )
 
-    return dcc.Graph(figure=fig, id='groceries_donut')
-
-# savings line
 def savings_line():
-    # get the data
-    savings_df = data.savings_growth_history()
+    df = data.savings_growth_history()
+    df["display_date"] = pd.to_datetime(df["display_date"], format="%d/%m/%Y")
 
-    # convert dates to datetime
-    savings_df['display_date'] = pd.to_datetime(savings_df['display_date'], format='%d/%m/%Y')
-
-    x_values = savings_df['display_date'].to_list()
-    y_values = savings_df['absolute_balance'].to_list()
-
-    # Create the figure with improved design
     fig = go.Figure(
-        data=go.Scatter(
-            x=x_values,
-            y=y_values,
-            mode='lines+markers',
-            line=dict(color='#1f77b4', width=3, shape='spline'),  # smooth line
-            marker=dict(size=10, color='#1f77b4', symbol='circle', line=dict(width=2, color='white')),
-            hovertemplate='%{x|%b %Y}<br>Balance: £%{y:,.2f}<extra></extra>'  # cleaner hover
+        go.Scatter(
+            x=df["display_date"],
+            y=df["absolute_balance"],
+            mode="lines+markers",
+            line=dict(color="#00E3CC", width=3, shape="spline"),
+            marker=dict(size=8, color="#00E3CC", line=dict(width=2, color="black")),
+            hovertemplate="%{x|%b %Y}<br>Balance: £%{y:,.2f}<extra></extra>",
         )
     )
+    return dcc.Graph(
+        figure=dark_layout(fig, "Savings Growth"),
+        style={'height': '400px'}
+        )
 
-    fig.update_layout(
-        title=dict(
-            text='Savings',
-            x=0.5,
-            xanchor='center',
-            font=dict(size=22, family='Arial', color='#333')
-        ),
-        xaxis=dict(
-            title='Month',
-            showgrid=True,
-            gridcolor='rgba(200,200,200,0.2)',
-            tickformat='%b %Y',
-            tickangle=-45,
-            showline=True,
-            linecolor='rgba(200,200,200,0.8)',
-            zeroline=False
-        ),
-        yaxis=dict(
-            title='Balance (£)',
-            showgrid=True,
-            gridcolor='rgba(200,200,200,0.2)',
-            showline=True,
-            linecolor='rgba(200,200,200,0.8)',
-            zeroline=False,
-            tickprefix='£'
-        ),
-        plot_bgcolor='white',
-        paper_bgcolor='white',
-        hovermode='x unified',
-        showlegend=False,
-        margin=dict(l=60, r=20, t=80, b=80)
+
+def portfolio_line():
+
+    # add a snapshot to the DB today if not done so yet
+    today = dt.datetime.now(dt.timezone.utc).date()
+    latest_entry = db['portfolio_value'].find_one(
+        sort=[('timestampAdded', -1)]
     )
 
-    # Optional: Add a subtle gradient fill under the line for style
-    # Add gradient-like effect without forcing y=0
-    fig.add_traces(go.Scatter(
-        x=x_values,
-        y=y_values,
-        mode='lines',
-        line=dict(color='rgba(31, 119, 180, 0)'),  # invisible line
-        fill='none',  # do NOT fill to zero
-        showlegend=False,
-        hoverinfo='skip'
-    ))
+    if latest_entry and latest_entry['timestampAdded'].date() < today:
+        data.snapshot(latest_entry)
+
+    portfolio_df = pd.DataFrame(list(db["portfolio_value"].find().sort("timestampAdded", 1)))
+    portfolio_df["timestampAdded"] = pd.to_datetime(portfolio_df["timestampAdded"])
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=portfolio_df["timestampAdded"],
+            y=portfolio_df["netDeposit"],
+            mode="lines+markers",
+            name="Net Deposit",
+            line=dict(color="#26A69A", width=3),
+            marker=dict(size=8, color="#26A69A", line=dict(width=2, color="black")),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=portfolio_df["timestampAdded"],
+            y=portfolio_df["portfolioValue"],
+            mode="lines+markers",
+            name="Portfolio Value",
+            line=dict(color="#FFA726", width=3),
+            marker=dict(size=8, color="#FFA726", line=dict(width=2, color="black")),
+        )
+    )
+    return dcc.Graph(
+        figure=dark_layout(
+            fig, "Portfolio Performance"),
+            style={'height': '400px'}
+            )
 
 
-    return dcc.Graph(figure=fig, id='savings_line')
-
-# categories bar chart
-def categories_bar():
-
-    # set the current month 
-    current_month = datetime.now().strftime('%B')
+def horizontal_categories_bar():
+    current_month = datetime.now().strftime("%B")
     current_year = datetime.now().year
-
-    # get the data  
-    categories_df = data.biggest_expenses_in_current_month(current_month, current_year)
-    categories_df = categories_df[categories_df['Direction'] == 'OUT']
-
-    # make the figure
-    x_values = categories_df['Category'].to_list()
-    y_values = categories_df['Total Expenditure'].to_list()
+    df = data.biggest_expenses_in_current_month(current_month, current_year)
+    df = df[df["Direction"] == "OUT"].sort_values("Total Expenditure", ascending=True)
 
     fig = go.Figure(
         data=go.Bar(
-            x=x_values,
-            y=y_values,
-            text=[f"£{v:,.2f}" for v in y_values],
-            textposition='auto',
-            marker=dict(
-                color='#ff6f61',  # modern dashboard color
-                line=dict(color='rgba(0,0,0,0.1)', width=1)
-            ),
-            hovertemplate='%{x}<br>Total: £%{y:,.2f}<extra></extra>'
+            x=df["Total Expenditure"],
+            y=df["Category"],
+            orientation="h",
+            text=[f"£{v:,.2f}" for v in df["Total Expenditure"]],
+            textposition="auto",
+            marker=dict(color="#FF7043", line=dict(width=1, color="#000")),
         )
     )
+    return dcc.Graph(figure=dark_layout(fig, f"Top Expenses in {current_month} {current_year}"))
 
-    # layout styling
-    fig.update_layout(
-        title=dict(
-            text=f"Top Expenses in {current_month} {current_year}",
-            x=0.5,
-            xanchor='center',
-            font=dict(size=22, family='Arial', color='#333')
-        ),
-        xaxis=dict(
-            title='Category',
-            showgrid=False,
-            showline=True,
-            linecolor='rgba(200,200,200,0.8)',
-            tickangle=-45
-        ),
-        yaxis=dict(
-            title='Expenditure (£)',
-            showgrid=True,
-            gridcolor='rgba(200,200,200,0.2)',
-            showline=True,
-            linecolor='rgba(200,200,200,0.8)',
-            tickprefix='£'
-        ),
-        plot_bgcolor='white',
-        paper_bgcolor='white',
-        margin=dict(l=60, r=20, t=80, b=120),
-        hovermode='x unified'
+
+# ---------- KPI CARD ----------
+def net_worth_card():
+    coll = db["portfolio_value"]
+    entries = list(coll.find().sort("timestampAdded", -1).limit(2))
+    if not entries:
+        return html.Div("No Data Available", style=CARD_STYLE)
+
+    latest, prev = entries[0], entries[1] if len(entries) > 1 else None
+    net_worth = latest.get("netWorth", 0)
+    change = net_worth - (prev.get("netWorth", 0) if prev else 0)
+    trend_color = "#66BB6A" if change >= 0 else "#EF5350"
+
+    return html.Div(
+        [
+            html.H4("Net Worth", style={"color": ACCENT}),
+            html.H2(f"£{net_worth:,.0f}", style={"fontSize": "48px", "color": "white"}),
+            html.P(
+                f"{'▲' if change >= 0 else '▼'} £{abs(change):,.0f}",
+                style={"color": trend_color, "fontWeight": "600"},
+            ),
+        ],
+        style={
+            **CARD_STYLE, 
+            "display": "flex",              
+            "flexDirection": "column",      
+            "justifyContent": "center",     
+        }
     )
 
-    return dcc.Graph(figure=fig, id='categories_bar')
 
+# ---------- TRANSACTIONS TABLE ----------
+def transactions_table():
+
+    today = dt.datetime.today()
+    start_date = today.replace(day=1)
+    end_date = (today.replace(day=1) + pd.DateOffset(months=1)) - pd.DateOffset(days=1)
+
+    start_date_str = f'{start_date.day}/{start_date.month}/{start_date.year}'
+    end_date_str = f'{end_date.day}/{end_date.month}/{end_date.year}'
+
+    # get transactions
+    df = data.transactions(start_date_str, end_date_str)
+
+    # Convert any datetime columns
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].dt.strftime("%d/%m/%Y %H:%M")
+
+    return dash_table.DataTable(
+        id="transactions-table",
+        columns=[{"name": col, "id": col} for col in df.columns],
+        data=df.to_dict("records"),
+
+        # ---------- DARK THEME ----------
+        style_table={
+            "backgroundColor": CARD_BG,
+            "padding": "20px",
+            "borderRadius": "20px",
+            "maxHeight": "400px",
+            "overflowX": "scroll",
+            "boxShadow": "0 4px 15px rgba(0, 0, 0, 0.4)",
+        },
+
+        # ----- HEADER (CENTER ALIGN) -----
+        style_header={
+            "backgroundColor": "#1E1E1E",
+            "color": ACCENT,
+            "fontWeight": "bold",
+            "border": "1px solid #333",
+            "fontFamily": FONT_FAMILY,
+            "textAlign": "center",     # <-- CENTER ALIGN HEADERS
+        },
+
+        # ----- FILTER ROW DARK THEME -----
+        style_filter={
+            "backgroundColor": "#111",
+            "color": TEXT_COLOR,
+            "border": "1px solid #333",
+            "fontFamily": FONT_FAMILY,
+        },
+
+        # ----- DATA CELLS (LEFT ALIGN) -----
+        style_data={
+            "backgroundColor": CARD_BG,
+            "color": TEXT_COLOR,
+            "border": "1px solid #333",
+            "fontFamily": FONT_FAMILY,
+            "textAlign": "left",        # <-- LEFT ALIGN DATA
+        },
+
+        
+        style_data_conditional=[
+            {
+                "if": {"row_index": "odd"},
+                "backgroundColor": "#181818",
+            },
+            { "if": {"column_id": "Amount"}, "textAlign": "center" },
+            { "if": {"column_id": "Currency"}, "textAlign": "center" },
+            { "if": {"column_id": "Direction"}, "textAlign": "center" },
+        ],
+
+        style_cell={
+            "padding": "8px",
+            "minWidth": "120px",
+            "whiteSpace": "normal",
+            "fontSize": "14px",
+        },
+
+        filter_options={"case": "insensitive"},
+        fixed_rows={"headers": True},
+
+
+        # ---------- EXTRA FEATURES ----------
+        sort_action="native",
+        filter_action="native",
+        page_action="none",
+        page_size=15,
+    )
+
+
+
+# ---------- APP LAYOUT ----------
 app.layout = dashboard()
+
 if __name__ == "__main__":
     app.run(debug=True)
