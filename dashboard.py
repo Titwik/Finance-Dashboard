@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 import data
 import os
 import dash
-from dash import dcc, html, dash_table
+from dash import dcc, html, dash_table, Input, Output
 import plotly.graph_objs as go
 from pymongo import MongoClient
 
@@ -55,6 +55,8 @@ def dashboard():
             "alignItems": "center",
         },
         children=[
+
+            dcc.Store(id='monthly-transactions-store'),
             html.H1(
                 "Personal Finance Dashboard",
                 style={
@@ -71,7 +73,7 @@ def dashboard():
                 [
                     html.Div(pocket_money_donut_chart(), style=GRAPH_STYLE),
                     html.Div(groceries_donut_chart(), style=GRAPH_STYLE),
-                    html.Div(horizontal_categories_bar(), style=GRAPH_STYLE),
+                    html.Div(categories_bar(), style=GRAPH_STYLE),
                 ],
                 style={
                     "display": "grid",
@@ -91,10 +93,10 @@ def dashboard():
                     html.Div(
                         net_worth_card(),
                         style={
-                            **GRAPH_STYLE,
                             "display": "flex",
                             "alignItems": "center",
                             "justifyContent": "center",
+                            "width": "100%",
                         },
                     ),
 
@@ -116,12 +118,8 @@ def dashboard():
                     html.Div(
                         transactions_table(),
                         style={
-                            "backgroundColor": CARD_BG,
-                            "padding": "20px",
-                            "borderRadius": "20px",
                             "width": "100%",
                             "maxWidth": "1800px",
-                            "boxShadow": "0 4px 15px rgba(0, 0, 0, 0.4)",
                         },
                     )
                 ],
@@ -170,8 +168,7 @@ def pocket_money_donut_chart():
             )
         ]
     )
-    return dcc.Graph(figure=dark_layout(fig, "Pocket Money"))
-
+    return dcc.Graph(figure=dark_layout(fig, "Pocket Money"), id='pocket-donut')
 
 def groceries_donut_chart():
     _, groceries = data.monthly_balance()
@@ -190,8 +187,7 @@ def groceries_donut_chart():
             )
         ]
     )
-    return dcc.Graph(figure=dark_layout(fig, "Groceries"))
-
+    return dcc.Graph(figure=dark_layout(fig, "Groceries"), id='groceries-donut')
 
 def savings_line():
     df = data.savings_growth_history()
@@ -211,7 +207,6 @@ def savings_line():
         figure=dark_layout(fig, "Savings Growth"),
         style={'height': '400px'}
         )
-
 
 def portfolio_line():
 
@@ -254,8 +249,7 @@ def portfolio_line():
             style={'height': '400px'}
             )
 
-
-def horizontal_categories_bar():
+def categories_bar():
     current_month = datetime.now().strftime("%B")
     current_year = datetime.now().year
     df = data.biggest_expenses_in_current_month(current_month, current_year)
@@ -263,16 +257,19 @@ def horizontal_categories_bar():
 
     fig = go.Figure(
         data=go.Bar(
-            x=df["Total Expenditure"],
-            y=df["Category"],
-            orientation="h",
+            x=df["Category"],
+            y=df["Total Expenditure"],
             text=[f"£{v:,.2f}" for v in df["Total Expenditure"]],
-            textposition="auto",
-            marker=dict(color="#FF7043", line=dict(width=1, color="#000")),
+            textposition='auto',
+            marker=dict(
+                color='#FF7043',  # modern dashboard color
+                line=dict(color='rgba(0,0,0,0.1)', width=1)
+            ),
+            hovertemplate='%{x}<br>Total: £%{y:,.2f}<extra></extra>'
         )
     )
-    return dcc.Graph(figure=dark_layout(fig, f"Top Expenses in {current_month} {current_year}"))
 
+    return dcc.Graph(figure=dark_layout(fig, f"Top Expenses in {current_month} {current_year}"), id='categories-bar')
 
 # ---------- KPI CARD ----------
 def net_worth_card():
@@ -303,19 +300,11 @@ def net_worth_card():
         }
     )
 
-
 # ---------- TRANSACTIONS TABLE ----------
 def transactions_table():
 
-    today = dt.datetime.today()
-    start_date = today.replace(day=1)
-    end_date = (today.replace(day=1) + pd.DateOffset(months=1)) - pd.DateOffset(days=1)
-
-    start_date_str = f'{start_date.day}/{start_date.month}/{start_date.year}'
-    end_date_str = f'{end_date.day}/{end_date.month}/{end_date.year}'
-
-    # get transactions
-    df = data.transactions(start_date_str, end_date_str)
+    # create empty transactions df
+    df = pd.DataFrame(columns=['Date', 'Counter Party Name', 'Category', 'Amount', 'Currency', 'Direction'])
 
     # Convert any datetime columns
     for col in df.columns:
@@ -325,7 +314,7 @@ def transactions_table():
     return dash_table.DataTable(
         id="transactions-table",
         columns=[{"name": col, "id": col} for col in df.columns],
-        data=df.to_dict("records"),
+        data=[],
 
         # ---------- DARK THEME ----------
         style_table={
@@ -393,6 +382,57 @@ def transactions_table():
         page_size=15,
     )
 
+# ---------- CALLBACKS ----------
+@app.callback(
+    Output("monthly-transactions-store", "data"),
+    Input("monthly-transactions-store", "data"),
+    prevent_initial_call=False  # run on page load
+)
+def load_monthly_data(_):
+
+    today = dt.datetime.today()
+    start_date = today.replace(day=1)
+    end_date = (today.replace(day=1) + pd.DateOffset(months=1)) - pd.DateOffset(days=1)
+
+    start = f"{start_date.day}/{start_date.month}/{start_date.year}"
+    end = f"{end_date.day}/{end_date.month}/{end_date.year}"
+
+    df = data.transactions(start, end)
+
+    # convert datetimes
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].dt.strftime("%d/%m/%Y %H:%M")
+
+    return df.to_dict("records")
+
+@app.callback(
+    Output('transactions-table', 'data'),
+    [
+        Input('categories-bar', 'clickData'),
+        Input('categories-bar', 'relayoutData'),
+        Input('monthly-transactions-store', 'data')
+    ]
+)
+def update_table(bar_click, relayout, store_data):
+
+    if store_data is None:
+        return []
+
+    df = pd.DataFrame(store_data)
+    filtered = df.copy()
+
+    # --- RESET FILTER ---
+    if relayout and "xaxis.autorange" in relayout:
+        # Double click happened → Return full table
+        return df.to_dict("records")
+
+    # --- APPLY CATEGORY FILTER ---
+    if bar_click:
+        category = bar_click['points'][0]['x']
+        filtered = filtered[filtered["Category"] == category]
+
+    return filtered.to_dict("records")
 
 
 # ---------- APP LAYOUT ----------
