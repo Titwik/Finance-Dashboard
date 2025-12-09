@@ -4,7 +4,6 @@ import time
 import requests
 import pandas as pd
 import datetime as dt
-#import yfinance as yf
 from pathlib import Path
 from dotenv import load_dotenv
 from pymongo import MongoClient
@@ -15,7 +14,7 @@ from datetime import datetime, timedelta
 load_dotenv()  # Loads variables from .env into the environment
 api_username = os.getenv("investment_api_key")
 api_password = os.getenv("investment_api_secret")
-mongo_uri = os.getenv("MONGO_URI")  
+mongo_uri = os.getenv("MONGO_URI_ONLINE")  
 db_name = "finance_dashboard"
 
 # initialize mongoDB
@@ -566,4 +565,28 @@ def snapshot(latest_entry):
 # ===================== EXECUTION SCRIPT ===================== #
 if __name__ == "__main__":
 
-    print(portfolio_performance())
+    mongo_uri = os.getenv("MONGO_URI_ONLINE")
+    db_name = "finance_dashboard"
+
+    # Initialize MongoDB client
+    client = MongoClient(mongo_uri)
+    db = client[db_name]
+
+    # Reference the new collection
+    test_collection = db["test"]
+
+    # Example document to insert
+    doc = {
+        "name": "Ritwik",
+        "role": "Junior Data Engineer",
+        "projects": ["dashboard", "investments"],
+        "active": True
+    }
+
+    # Insert the document
+    #insert_result = test_collection.insert_one(doc)
+
+    #print(f"Document inserted with _id: {insert_result.inserted_id}")
+
+    # Optional: list collections to confirm creation
+    #print("Collections now in the DB:", db.list_collection_names())
