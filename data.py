@@ -144,6 +144,8 @@ def monthly_balance():
         #savingUid = grocery_space['savingsGoalUid']
         groceries_allowance = grocery_space['target']['minorUnits']
         remaining_groceries = grocery_space['totalSaved']['minorUnits']
+        if remaining_groceries > groceries_allowance:
+            remaining_groceries = groceries_allowance # prevents visual from breaking
         total_groceries_spent = groceries_allowance - remaining_groceries
         
         return remaining_groceries/100, total_groceries_spent/100
@@ -298,41 +300,33 @@ def transactions(start_date, end_date):
     accountUid = accounts_data['accounts'][0]['accountUid']
     main_categoryUid = accounts_data['accounts'][0]['defaultCategory']
 
-    # get transactions from saving spaces
+    # Fetch spaces once
     spaces = api.get_savings_spaces(accountUid)['savingsGoals']
-    for space in spaces:
-        if space['name'] == 'Groceries':
-            groceryUid = space['savingsGoalUid']
-            break
-    
-    for space in spaces:
-        if space['name'] == 'Bills':
-            billsUid = space['savingsGoalUid']
-            break
 
-    # Get transactions
-    general_transactions = api.get_transaction_statement(
-        accountUid,
-        main_categoryUid,
-        start_iso,
-        end_iso
-    )
-    
-    groceries_transactions = api.get_transaction_statement(
-        accountUid,
-        groceryUid,
-        start_iso,
-        end_iso
-    )
-    
-    bills_transactions = api.get_transaction_statement(
-        accountUid,
-        billsUid,
-        start_iso,
-        end_iso
-    )
+    def get_space_uid(spaces, name):
+        for s in spaces:
+            if s['name'] == name:
+                return s['savingsGoalUid']
+        return None
 
-    transactions = general_transactions + groceries_transactions + bills_transactions
+    # Define categories you want to fetch from
+    categories = {
+        "general": main_categoryUid,
+        "groceries": get_space_uid(spaces, "Groceries"),
+        "bills": get_space_uid(spaces, "Bills"),
+    }
+
+    # Fetch all transactions in a loop
+    transactions = []
+    for cat_uid in categories.values():
+        if cat_uid:  # ignore if not found
+            tx = api.get_transaction_statement(
+                accountUid,
+                cat_uid,
+                start_iso,
+                end_iso
+            )
+            transactions.extend(tx)
 
     transaction_list = []
     for tx in transactions:
@@ -421,13 +415,7 @@ def investment_transactions():
                         should_stop = True
                         break
 
-                filled_qty = order.get("filledQuantity", 0)
-                if filled_qty > 0:
-                    order["transaction_type"] = "BUY"
-                elif filled_qty < 0:
-                    order["transaction_type"] = "SELL"
-                else:
-                    order["transaction_type"] = "UNKNOWN"
+                order["transaction_type"] = order['order']['side']
 
                 all_orders.append(order)
 
@@ -439,16 +427,28 @@ def investment_transactions():
             break
 
     def save_to_mongo(orders):
+        """
+        Saves new, unique orders to a MongoDB collection.
+
+        :param orders: A list of transaction dictionaries (from your data).
+        :param transaction_coll: The MongoDB collection object (e.g., pymongo.collection.Collection).
+        """
         if not orders:
-            #print("No transactions to process.")
+            # print("No transactions to process.")
             return
 
-        new_orders = [o for o in orders if not transaction_coll.find_one({"id": o["id"]})]
+        # Find the IDs of all orders that are NOT already in the database
+        new_orders = []
+        for o in orders:
+            order_id = o["order"]["id"]
+            
+            # Check if an order with this ID already exists in the MongoDB collection
+            if not transaction_coll.find_one({"id": order_id}):
+                o["id"] = order_id
+                new_orders.append(o)
+
         if new_orders:
             transaction_coll.insert_many(new_orders)
-            #print(f"Saved {len(new_orders)} new transactions to MongoDB.")
-        #else:
-            #print("No new transactions found to save.")
 
     save_to_mongo(all_orders)
 
@@ -462,11 +462,31 @@ def portfolio_performance():
     investment_transactions()
     #time.sleep(3)
 
-    # sum fillCost
+    # get net deposits 
     net_deposit_result = list(transaction_coll.aggregate([
-        {"$group": {"_id": None, "totalFillCost": {"$sum": "$fillCost"}}}
+        {
+            "$group": {
+                "_id": None,
+                "totalNetValue": {
+                    "$sum": {
+                        "$switch": {
+                            "branches": [
+                                {
+                                    "case": { "$eq": ["$transaction_type", "SELL"] },
+                                    "then": { "$multiply": [ { "$ifNull": ["$fill.walletImpact.netValue", 0] }, -1 ] }
+                                }
+                            ],
+                            "default": { "$ifNull": ["$fill.walletImpact.netValue", 0] }
+                        }
+                    }
+                }
+            }
+        }
     ]))
-    net_deposit = net_deposit_result[0]['totalFillCost'] if net_deposit_result else 0
+
+    net_deposit = net_deposit_result[0]["totalNetValue"] if net_deposit_result else 0
+
+    # ------------------------------ #
 
     # get current portfolio value
     portfolio_data = portfolio()
@@ -546,54 +566,4 @@ def snapshot(latest_entry):
 # ===================== EXECUTION SCRIPT ===================== #
 if __name__ == "__main__":
 
-    start_date = '1/11/2025'
-    end_date = '12/11/2025'
-    # Convert input strings to datetime objects
-    start_dt = datetime.strptime(start_date, "%d/%m/%Y")
-    end_dt = datetime.strptime(end_date, "%d/%m/%Y")
-    start_iso = start_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    end_iso   = end_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-
-    # Call the API
-    api = StarlingAPI()
-    accounts_data = api.get_accounts()
-    accountUid = accounts_data['accounts'][0]['accountUid']
-    main_categoryUid = accounts_data['accounts'][0]['defaultCategory']
-
-    # get transactions from saving spaces
-    spaces = api.get_savings_spaces(accountUid)['savingsGoals']
-    for space in spaces:
-        if space['name'] == 'Groceries':
-            groceryUid = space['savingsGoalUid']
-            break
-    
-    for space in spaces:
-        if space['name'] == 'Bills':
-            billsUid = space['savingsGoalUid']
-            break
-
-    # Get transactions
-    general_transactions = api.get_transaction_statement(
-        accountUid,
-        main_categoryUid,
-        start_iso,
-        end_iso
-    )
-    
-    groceries_transactions = api.get_transaction_statement(
-        accountUid,
-        groceryUid,
-        start_iso,
-        end_iso
-    )
-    
-    bills_transactions = api.get_transaction_statement(
-        accountUid,
-        billsUid,
-        start_iso,
-        end_iso
-    )
-
-    transactions = general_transactions + groceries_transactions + bills_transactions
-
-    print(json.dumps(transactions, indent=4))
+    print(portfolio_performance())

@@ -149,7 +149,6 @@ def dark_layout(fig, title):
     )
     return fig
 
-
 # ---------- CHARTS ----------
 def pocket_money_donut_chart():
     pocket_money, _ = data.monthly_balance()
