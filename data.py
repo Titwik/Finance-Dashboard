@@ -12,8 +12,8 @@ from datetime import datetime, timedelta
 # ===================== CREDENTIALS ===================== #
 
 load_dotenv()  # Loads variables from .env into the environment
-api_username = os.getenv("investment_api_key")
-api_password = os.getenv("investment_api_secret")
+api_username = os.getenv("INVESTMENT_API_KEY")
+api_password = os.getenv("INVESTMENT_API_SECRET")
 mongo_uri = os.getenv("MONGO_URI_ONLINE")  
 db_name = "finance_dashboard"
 
@@ -24,7 +24,7 @@ db = client[db_name]
 class StarlingAPI:
     def __init__(self, max_retries=3, backoff=2):
         # API token environment variable
-        TOKEN = os.getenv("payment_token")
+        TOKEN = os.getenv("PAYMENT_TOKEN")
 
         self.base_url = "https://api.starlingbank.com/api/v2"
         self.headers = {
@@ -114,13 +114,13 @@ def monthly_balance():
     def pocket_money():
 
         '''
-        Logic: I have 180 GBP for casual, guilt-free spending. Check if category is NOT investments, rent, utilities etc and subtract from 180 GBP
+        Logic: I have 200 GBP for casual, guilt-free spending. Check if category is NOT investments, rent, utilities etc and subtract from 180 GBP
         '''
-        pocket_money_allowance = 18000 # in minorUnits
+        pocket_money_allowance = 20000 # in minorUnits
 
         remaining_pocket_money = api.get_balance(accountUid)['effectiveBalance']['minorUnits']
-        if remaining_pocket_money > 18000:
-            remaining_pocket_money = 18000 # prevents the visual from breaking
+        if remaining_pocket_money > pocket_money_allowance:
+            remaining_pocket_money = pocket_money_allowance # prevents the visual from breaking
         
         total_pocket_money_spent = pocket_money_allowance - remaining_pocket_money
 
@@ -129,7 +129,7 @@ def monthly_balance():
     def grocery_balance():
 
         """
-        Logic: I have 120 GBP for groceries, so 100% of the visual should be 120. I will then deduct from 120 any amount that is classed as 'groceries' in the transaction statement category.
+        Logic: I have 150 GBP for groceries, so 100% of the visual should be 150. I will then deduct from 150 any amount that is classed as 'groceries' in the transaction statement category.
         """
 
         #groceries_allowance = 12000 # in minorUnits
@@ -510,16 +510,16 @@ def portfolio_performance():
         'netDeposit': round(net_deposit,2),
         'portfolioValue': round(portfolio_value, 2),
         'portfolio': [
-        {
-            'ticker': ins['ticker'],
-            'quantity': ins['quantity'],
-            'priceGBP': round(
-                ins['currentPrice'] * conversion_rate_usd_to_gbp if "_US_" in ins['ticker'] else
-                ins['currentPrice'] / 100 if "SGLNl_EQ" in ins['ticker'] else
-                ins['currentPrice'], 2
-            )
-        } for ins in portfolio_data
-    ],
+            {
+                'ticker': ins['ticker'],
+                'quantity': ins['quantity'],
+                'priceGBP': round(
+                    ins['currentPrice'] * conversion_rate_usd_to_gbp if "_US_" in ins['ticker'] else
+                    ins['currentPrice'] / 100 if "SGLNl_EQ" in ins['ticker'] else
+                    ins['currentPrice'], 2
+                )
+            } for ins in portfolio_data
+        ],
         'timestampAdded': dt.datetime.now(dt.timezone.utc)
     }
 
@@ -530,11 +530,6 @@ def snapshot(latest_entry):
 
     portfolio_coll = db['portfolio_value']
     savings_coll = db['savings']
-    
-    today = dt.datetime.now(dt.UTC).date()
-    
-    if latest_entry['timestampAdded'].date() == today:
-        portfolio_coll.delete_one({'_id': latest_entry['_id']})
 
     # get savings data 
     savings_data = list(savings_coll.find())
@@ -558,35 +553,13 @@ def snapshot(latest_entry):
     
     snapshot['timestampAdded'] = str(snapshot['timestampAdded'])
     snapshot['_id'] = str(snapshot['_id'])
-    #print('Inserted to DB')
+    print(f'Snapshot of {snapshot['timestampAdded']} Inserted to DB')
 
     return snapshot
 
 # ===================== EXECUTION SCRIPT ===================== #
-if __name__ == "__main__":
+#if __name__ == "__main__":
 
-    mongo_uri = os.getenv("MONGO_URI_ONLINE")
-    db_name = "finance_dashboard"
+#    pass
 
-    # Initialize MongoDB client
-    client = MongoClient(mongo_uri)
-    db = client[db_name]
-
-    # Reference the new collection
-    test_collection = db["test"]
-
-    # Example document to insert
-    doc = {
-        "name": "Ritwik",
-        "role": "Junior Data Engineer",
-        "projects": ["dashboard", "investments"],
-        "active": True
-    }
-
-    # Insert the document
-    #insert_result = test_collection.insert_one(doc)
-
-    #print(f"Document inserted with _id: {insert_result.inserted_id}")
-
-    # Optional: list collections to confirm creation
-    #print("Collections now in the DB:", db.list_collection_names())
+    

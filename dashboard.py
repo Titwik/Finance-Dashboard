@@ -11,7 +11,7 @@ from pymongo import MongoClient
 
 # Load environment
 load_dotenv()
-mongo_uri = os.getenv("MONGO_URI")
+mongo_uri = os.getenv("MONGO_URI_ONLINE")
 db_name = "finance_dashboard"
 client = MongoClient(mongo_uri)
 db = client[db_name]
@@ -47,7 +47,8 @@ def dashboard():
         style={
             "backgroundColor": DARK_BG,
             "minHeight": "100vh",
-            "padding": "20px 40px",
+            "padding": "0",
+            "margin": "0",
             "fontFamily": FONT_FAMILY,
             "color": TEXT_COLOR,
             "display": "flex",
@@ -57,15 +58,61 @@ def dashboard():
         children=[
 
             dcc.Store(id='monthly-transactions-store'),
-            html.H1(
-                "Personal Finance Dashboard",
+            dcc.Store(id='refresh-trigger'),
+
+            # HEADER ROW
+            html.Div(
                 style={
-                    "textAlign": "center",
-                    "color": ACCENT,
-                    "marginBottom": "20px",
-                    "fontSize": "32px",
-                    "fontWeight": "600",
+                    "width": "100%",
+                    "display": "flex",
+                    "justifyContent": "center",   # center container
+                    "padding": "10px 0",          # remove side padding
                 },
+                children=[
+                    html.Div(
+                        style={
+                            "display": "flex",
+                            "justifyContent": "space-between",
+                            "alignItems": "center",
+                            "width": "100%",
+                            "maxWidth": "1800px",     # match all dashboard content width
+                        },
+                        children=[
+                            # Left spacer
+                            html.Div(style={"width": "80px"}),
+
+                            # TITLE
+                            html.H1(
+                                "Personal Finance Dashboard",
+                                style={
+                                    "textAlign": "center",
+                                    "color": ACCENT,
+                                    "margin": 0,
+                                    "fontSize": "32px",
+                                    "fontWeight": "600",
+                                    "flexGrow": 1,
+                                },
+                            ),
+
+                            # Refresh Button (Right)
+                            html.Button(
+                                "Refresh",
+                                id="refresh-btn",
+                                n_clicks=0,
+                                style={
+                                    "backgroundColor": ACCENT,
+                                    "color": DARK_BG,
+                                    "border": "none",
+                                    "padding": "10px 16px",
+                                    "borderRadius": "6px",
+                                    "cursor": "pointer",
+                                    "fontSize": "14px",
+                                    "fontWeight": "600",
+                                },
+                            ),
+                        ],
+                    )
+                ]
             ),
 
             # ---------- FIRST ROW ----------
@@ -131,7 +178,6 @@ def dashboard():
             ),
         ],
     )
-
 
 # ---------- DARK MODE PLOTLY STYLES ----------
 def dark_layout(fig, title):
@@ -204,7 +250,8 @@ def savings_line():
     )
     return dcc.Graph(
         figure=dark_layout(fig, "Savings Growth"),
-        style={'height': '400px'}
+        style={'height': '400px'},
+        id="savings-line"
         )
 
 def portfolio_line():
@@ -217,6 +264,7 @@ def portfolio_line():
 
     if latest_entry and latest_entry['timestampAdded'].date() < today:
         data.snapshot(latest_entry)
+        print('this line ran')
 
     portfolio_df = pd.DataFrame(list(db["portfolio_value"].find().sort("timestampAdded", 1)))
     portfolio_df["timestampAdded"] = pd.to_datetime(portfolio_df["timestampAdded"])
@@ -245,7 +293,8 @@ def portfolio_line():
     return dcc.Graph(
         figure=dark_layout(
             fig, "Portfolio Performance"),
-            style={'height': '400px'}
+            style={'height': '400px'},
+            id='portfolio-line'
             )
 
 def categories_bar():
@@ -268,11 +317,18 @@ def categories_bar():
         )
     )
 
-    return dcc.Graph(figure=dark_layout(fig, f"Top Expenses in {current_month} {current_year}"), id='categories-bar')
+    return dcc.Graph(
+        figure=dark_layout(
+            fig, 
+            f"Top Expenses in {current_month} {current_year}"
+            ), 
+            id='categories-bar'
+        )
 
 # ---------- KPI CARD ----------
 def net_worth_card():
     coll = db["portfolio_value"]
+
     entries = list(coll.find().sort("timestampAdded", -1).limit(2))
     if not entries:
         return html.Div("No Data Available", style=CARD_STYLE)
@@ -381,6 +437,25 @@ def transactions_table():
         page_size=15,
     )
 
+# ---------- REFRESH BUTTON ----------
+def refresh_button():
+
+    return html.Button(
+        "Refresh",
+        id="refresh-btn",
+        n_clicks=0,
+        style={
+            "backgroundColor": ACCENT,
+            "color": DARK_BG,
+            "border": "none",
+            "padding": "10px 16px",
+            "borderRadius": "6px",
+            "cursor": "pointer",
+            "fontSize": "14px",
+            "fontWeight": "600",
+        },
+    )
+
 # ---------- CALLBACKS ----------
 @app.callback(
     Output("monthly-transactions-store", "data"),
@@ -433,6 +508,59 @@ def update_table(bar_click, relayout, store_data):
 
     return filtered.to_dict("records")
 
+@app.callback(
+    Output("refresh-trigger", "data"),
+    Input("refresh-btn", "n_clicks"),
+    prevent_initial_call=True
+)
+def trigger_refresh(n):
+    # Store a unique timestamp so all dependent components refresh
+    return {"timestamp": datetime.now().isoformat()}
+
+# pocket donut refresh
+@app.callback(
+    Output("pocket-donut", "figure"),
+    Input("refresh-trigger", "data"),
+)
+def refresh_pocket_money(_):
+    fig = pocket_money_donut_chart().figure
+    return fig
+
+# groceries donut refresh
+@app.callback(
+    Output("groceries-donut", "figure"),
+    Input("refresh-trigger", "data"),
+)
+def refresh_groceries(_):
+    fig = groceries_donut_chart().figure
+    return fig
+
+# savings refresh
+@app.callback(
+    Output("savings-line", "figure"),
+    Input("refresh-trigger", "data"),
+)
+def refresh_savings(_):
+    fig = savings_line().figure
+    return fig
+
+# portfolio refresh
+@app.callback(
+    Output("portfolio-line", "figure"),
+    Input("refresh-trigger", "data"),
+)
+def refresh_portfolio(_):
+    fig = portfolio_line().figure
+    return fig
+
+# category refresh
+@app.callback(
+    Output("categories-bar", "figure"),
+    Input("refresh-trigger", "data"),
+)
+def refresh_categories(_):
+    fig = categories_bar().figure
+    return fig
 
 # ---------- APP LAYOUT ----------
 app.layout = dashboard()
