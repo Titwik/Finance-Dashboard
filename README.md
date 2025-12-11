@@ -35,6 +35,15 @@ The dashboard currently includes the following visualizations:
 
 These visualisations were designed specifically to match my personal budgeting workflow.
 
+## Tech Stack 
+
+- Python
+- Plotly Dash
+- MongoDB Atlas
+- Pandas
+- Pymongo
+- Plotly Cloud (deployment)
+
 ## Author
 
 Created and maintained by me, for my own use :) <br>
