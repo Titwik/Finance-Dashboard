@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project is a personal finance dashboard I built to analyse my spending habits, budgeting patterns, and month-to-month trends. It is not designed as a plug-and-play tool for others — the structure, database fields, categories, and saving space names are tailored specifically to my own setup.
+This project is a complete, end-to-end personal finance dashboard I built to analyse my spending habits, budgeting patterns, and month-to-month trends. The structure, database fields, categories, and saving space names are tailored specifically to my own setup.
 
 The system combines a cloud-hosted MongoDB Atlas database with a Dash application deployed on Plotly Cloud. The dashboard provides a clean interface for exploring transactions, my monthly budgeting and financial behaviour, as well as track the growth of my net worth over time.
 
