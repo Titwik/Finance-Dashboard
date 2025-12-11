@@ -145,6 +145,7 @@ def dashboard():
                             "justifyContent": "center",
                             "width": "100%",
                         },
+                        id='net-worth-card'
                     ),
 
                     html.Div(portfolio_line(), style=GRAPH_STYLE),
@@ -561,6 +562,14 @@ def refresh_portfolio(_):
 def refresh_categories(_):
     fig = categories_bar().figure
     return fig
+
+# net worth card refresh
+@app.callback(
+    Output("net-worth-card", "children"),
+    Input("refresh-trigger", "data"),
+)
+def refresh_net_worth(_):
+    return net_worth_card()
 
 # ---------- APP LAYOUT ----------
 app.layout = dashboard()
