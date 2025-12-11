@@ -509,67 +509,40 @@ def update_table(bar_click, relayout, store_data):
 
     return filtered.to_dict("records")
 
+# Map component IDs → their generator functions
+REFRESH_MAP = {
+    "pocket-donut": lambda: pocket_money_donut_chart().figure,
+    "groceries-donut": lambda: groceries_donut_chart().figure,
+    "savings-line": lambda: savings_line().figure,
+    "portfolio-line": lambda: portfolio_line().figure,
+    "categories-bar": lambda: categories_bar().figure,
+    "net-worth-card": lambda: net_worth_card(),   # returns children, not figure
+}
+
 @app.callback(
     Output("refresh-trigger", "data"),
     Input("refresh-btn", "n_clicks"),
     prevent_initial_call=True
 )
-def trigger_refresh(n):
-    # Store a unique timestamp so all dependent components refresh
+def trigger_refresh(_):
     return {"timestamp": datetime.now().isoformat()}
+    
 
-# pocket donut refresh
 @app.callback(
-    Output("pocket-donut", "figure"),
+    [
+        Output("pocket-donut", "figure"),
+        Output("groceries-donut", "figure"),
+        Output("savings-line", "figure"),
+        Output("portfolio-line", "figure"),
+        Output("categories-bar", "figure"),
+        Output("net-worth-card", "children"),
+    ],
     Input("refresh-trigger", "data"),
 )
-def refresh_pocket_money(_):
-    fig = pocket_money_donut_chart().figure
-    return fig
+def refresh_all(_):
+    results = [fn() for fn in REFRESH_MAP.values()]
+    return results
 
-# groceries donut refresh
-@app.callback(
-    Output("groceries-donut", "figure"),
-    Input("refresh-trigger", "data"),
-)
-def refresh_groceries(_):
-    fig = groceries_donut_chart().figure
-    return fig
-
-# savings refresh
-@app.callback(
-    Output("savings-line", "figure"),
-    Input("refresh-trigger", "data"),
-)
-def refresh_savings(_):
-    fig = savings_line().figure
-    return fig
-
-# portfolio refresh
-@app.callback(
-    Output("portfolio-line", "figure"),
-    Input("refresh-trigger", "data"),
-)
-def refresh_portfolio(_):
-    fig = portfolio_line().figure
-    return fig
-
-# category refresh
-@app.callback(
-    Output("categories-bar", "figure"),
-    Input("refresh-trigger", "data"),
-)
-def refresh_categories(_):
-    fig = categories_bar().figure
-    return fig
-
-# net worth card refresh
-@app.callback(
-    Output("net-worth-card", "children"),
-    Input("refresh-trigger", "data"),
-)
-def refresh_net_worth(_):
-    return net_worth_card()
 
 # ---------- APP LAYOUT ----------
 app.layout = dashboard()
