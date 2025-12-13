@@ -24,7 +24,7 @@ The system combines a cloud-hosted MongoDB Atlas database with a Dash applicatio
 
 ## Visualizations
 
-<img width="1479" height="824" alt="Screenshot_09-Dec_21-52-35_17672" src="https://github.com/user-attachments/assets/4788f912-1626-4edc-a4f3-9a38e21a4a2d" />
+<img width="1663" height="912" alt="image" src="https://github.com/user-attachments/assets/c7fb56fb-736d-4db7-9b37-f7b1572db63d" />
 
 The dashboard currently includes the following visualizations:
 - Donut charts for budgeting purposes
